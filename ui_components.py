@@ -772,6 +772,8 @@ class ProductCardView(discord.ui.View):
     
     @discord.ui.button(label='Buy Now', style=discord.ButtonStyle.success, emoji='💰')
     async def buy_now(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
         embed = discord.Embed(
             title="🛒 การซื้อสินค้า",
             description=f"คุณต้องการซื้อ **{self.product_name}** หรือไม่?",
@@ -782,21 +784,100 @@ class ProductCardView(discord.ui.View):
             value=f"ใช้คำสั่ง `!buy {self.product_name}` เพื่อซื้อสินค้า",
             inline=False
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
     
     @discord.ui.button(label='Add to cart', style=discord.ButtonStyle.primary, emoji='🛒')
     async def add_to_cart(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="🛒 เพิ่มลงรถเข็น",
-            description=f"เพิ่ม **{self.product_name}** ลงรถเข็นแล้ว",
-            color=0x3498db
-        )
-        embed.add_field(
-            name="💡 คำแนะนำ",
-            value="ใช้คำสั่ง `!cart` เพื่อดูรถเข็นสินค้า",
-            inline=False
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Defer the interaction immediately to prevent timeout
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # ดึงข้อมูลสินค้าจากสต็อก
+            product = self.stock_manager.check_stock(self.product_name)
+            
+            if product:
+                # Import user_carts from bot.py
+                from bot import user_carts, Cart
+                
+                user_id = str(interaction.user.id)
+                if user_id not in user_carts:
+                    user_carts[user_id] = Cart()
+                
+                # เพิ่มสินค้าลงรถเข็น (จำนวน 1 ชิ้น)
+                price = float(product.get('ราคา', 0))
+                unit = product.get('หน่วย', 'ชิ้น')
+                quantity = 1
+                
+                # ตรวจสอบสต็อกเพียงพอหรือไม่
+                available_quantity = int(product.get('จำนวน', 0))
+                if available_quantity < quantity:
+                    embed = discord.Embed(
+                        title="❌ สต็อกไม่เพียงพอ",
+                        description=f"สินค้า **{self.product_name}** เหลือเพียง {available_quantity} {unit}",
+                        color=0xe74c3c
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    return
+                
+                user_carts[user_id].add_item(self.product_name, quantity, price, unit)
+                
+                # แสดงรายการสินค้าในรถเข็นทั้งหมด
+                cart = user_carts[user_id]
+                cart_items = cart.get_items()
+                total_price = cart.get_total()
+                
+                embed = discord.Embed(
+                    title="✅ เพิ่มลงรถเข็นสำเร็จ",
+                    description=f"เพิ่ม **{self.product_name}** x{quantity} ลงรถเข็นแล้ว!",
+                    color=0x2ecc71
+                )
+                
+                # แสดงรายการสินค้าในรถเข็นทั้งหมด
+                cart_list = ""
+                for i, item in enumerate(cart_items, 1):
+                    item_total = item['price'] * item['quantity']
+                    cart_list += f"{i}. **{item['product_name']}** x{item['quantity']} {item['unit']} = {item_total:,.0f} บาท\n"
+                
+                embed.add_field(
+                    name="� รถเข็นของคุณ",
+                    value=cart_list if cart_list else "ไม่มีสินค้า",
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="💰 ยอดรวมทั้งหมด",
+                    value=f"{total_price:,.0f} บาท",
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="� จำนวนรายการ",
+                    value=f"{len(cart_items)} รายการ",
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="💡 คำแนะนำ",
+                    value="ใช้คำสั่ง `!checkout` เพื่อชำระเงิน\nใช้คำสั่ง `!cart` เพื่อดูรถเข็น\nใช้คำสั่ง `!clear_cart` เพื่อเคลียร์รถเข็น",
+                    inline=False
+                )
+                
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                embed = discord.Embed(
+                    title="❌ ไม่พบสินค้า",
+                    description=f"ไม่พบสินค้า **{self.product_name}** ในระบบ",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถเพิ่มสินค้าลงรถเข็นได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     # @discord.ui.button(label='เพิ่มรูปภาพ', style=discord.ButtonStyle.secondary, emoji='📸')
     # async def add_image(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -884,6 +965,8 @@ class ProductCardView(discord.ui.View):
     
     @discord.ui.button(label='Checkout', style=discord.ButtonStyle.secondary, emoji='💳')
     async def checkout(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        
         embed = discord.Embed(
             title="💳 ชำระเงิน",
             description=f"กำลังดำเนินการชำระเงินสำหรับ **{self.product_name}**",
@@ -894,12 +977,508 @@ class ProductCardView(discord.ui.View):
             value="ระบบการชำระเงินจะเปิดให้บริการในเร็วๆ นี้",
             inline=False
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @discord.ui.button(label='เพิ่มรูปภาพ', style=discord.ButtonStyle.secondary, emoji='📸', row=1)
     async def add_image_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message(
+        await interaction.response.defer(ephemeral=True)
+        
+        await interaction.followup.send(
             "เลือกสินค้าที่ต้องการเพิ่มรูปภาพ:",
             view=ProductSelectView(self.stock_manager, "เพิ่มรูปภาพ"),
             ephemeral=True
         )
+
+class SalesModal(discord.ui.Modal):
+    def __init__(self, stock_manager):
+        super().__init__(title="🛒 สร้างการขาย")
+        self.stock_manager = stock_manager
+        
+        # รายการสินค้าที่ต้องการขาย
+        self.items_input = discord.ui.TextInput(
+            label="รายการสินค้า",
+            placeholder="รูปแบบ: ชื่อสินค้า:จำนวน, ชื่อสินค้า:จำนวน\nตัวอย่าง: ปากกา:5, ยางลบ:3",
+            required=True,
+            max_length=2000,
+            style=discord.TextStyle.paragraph
+        )
+        self.add_item(self.items_input)
+        
+        # หมายเหตุ
+        self.notes = discord.ui.TextInput(
+            label="หมายเหตุ (ไม่บังคับ)",
+            placeholder="หมายเหตุเพิ่มเติม...",
+            required=False,
+            max_length=500,
+            style=discord.TextStyle.paragraph
+        )
+        self.add_item(self.notes)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            # แยกรายการสินค้า
+            items_text = self.items_input.value.strip()
+            items = []
+            errors = []
+            
+            for item_text in items_text.split(','):
+                item_text = item_text.strip()
+                if ':' in item_text:
+                    parts = item_text.split(':')
+                    if len(parts) == 2:
+                        product_name = parts[0].strip()
+                        try:
+                            quantity = int(parts[1].strip())
+                            
+                            # ตรวจสอบสินค้าในสต็อก
+                            product = self.stock_manager.check_stock(product_name)
+                            if product:
+                                available_quantity = int(product['จำนวน'])
+                                if available_quantity >= quantity:
+                                    items.append({
+                                        'name': product_name,
+                                        'quantity': quantity,
+                                        'price': float(product.get('ราคา', 0)),
+                                        'unit': product.get('หน่วย', 'ชิ้น')
+                                    })
+                                else:
+                                    errors.append(f"❌ {product_name}: สต็อกไม่เพียงพอ (มี {available_quantity} ต้องการ {quantity})")
+                            else:
+                                errors.append(f"❌ {product_name}: ไม่พบสินค้าในระบบ")
+                        except ValueError:
+                            errors.append(f"❌ {product_name}: จำนวนไม่ถูกต้อง")
+                    else:
+                        errors.append(f"❌ รูปแบบไม่ถูกต้อง: {item_text}")
+                else:
+                    errors.append(f"❌ รูปแบบไม่ถูกต้อง: {item_text}")
+            
+            if errors:
+                embed = discord.Embed(
+                    title="❌ พบข้อผิดพลาด",
+                    description="\n".join(errors),
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            if not items:
+                embed = discord.Embed(
+                    title="❌ ไม่พบรายการสินค้า",
+                    description="กรุณาใส่รายการสินค้าที่ต้องการขาย",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            # แสดงรายการสินค้าที่จะขาย
+            embed = discord.Embed(
+                title="🛒 ยืนยันการขาย",
+                description="กรุณาตรวจสอบรายการสินค้าที่จะขาย",
+                color=0x3498db
+            )
+            
+            total_amount = 0
+            for item in items:
+                item_total = item['quantity'] * item['price']
+                total_amount += item_total
+                
+                embed.add_field(
+                    name=f"📦 {item['name']}",
+                    value=f"จำนวน: {item['quantity']} {item['unit']}\nราคา: {item['price']:,.0f} x {item['quantity']} = {item_total:,.0f}",
+                    inline=True
+                )
+            
+            embed.add_field(
+                name="💰 ยอดรวมทั้งหมด",
+                value=f"{total_amount:,.0f} บาท",
+                inline=False
+            )
+            
+            if self.notes.value:
+                embed.add_field(
+                    name="📝 หมายเหตุ",
+                    value=self.notes.value,
+                    inline=False
+                )
+            
+            view = SalesConfirmView(self.stock_manager, items, self.notes.value)
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถสร้างการขายได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+class SalesConfirmView(discord.ui.View):
+    def __init__(self, stock_manager, items, notes):
+        super().__init__(timeout=300)
+        self.stock_manager = stock_manager
+        self.items = items
+        self.notes = notes
+    
+    @discord.ui.button(label='ยืนยันการขาย', style=discord.ButtonStyle.success, emoji='✅')
+    async def confirm_sale(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        try:
+            # สร้างใบเสร็จ
+            bill_number, total_amount = self.stock_manager.create_bill(
+                interaction.user,
+                self.items,
+                self.notes
+            )
+            
+            if bill_number:
+                # สร้าง embed ใบเสร็จ
+                embed = discord.Embed(
+                    title="🧾 ใบเสร็จการขาย",
+                    description=f"เลขที่ใบเสร็จ: **{bill_number}**",
+                    color=0x2ecc71
+                )
+                
+                embed.add_field(
+                    name="👤 ผู้ขาย",
+                    value=f"{interaction.user.mention}",
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="📅 วันที่",
+                    value=f"<t:{int(interaction.created_at.timestamp())}:F>",
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="💰 ยอดรวม",
+                    value=f"{total_amount:,.0f} บาท",
+                    inline=True
+                )
+                
+                # รายการสินค้า
+                items_text = ""
+                for item in self.items:
+                    item_total = item['quantity'] * item['price']
+                    items_text += f"• {item['name']} x {item['quantity']} {item['unit']} = {item_total:,.0f} บาท\n"
+                
+                embed.add_field(
+                    name="📦 รายการสินค้า",
+                    value=items_text,
+                    inline=False
+                )
+                
+                if self.notes:
+                    embed.add_field(
+                        name="📝 หมายเหตุ",
+                        value=self.notes,
+                        inline=False
+                    )
+                
+                embed.set_footer(text=f"ใบเสร็จเลขที่: {bill_number}")
+                
+                # ส่งใบเสร็จในช่องแชทปัจจุบัน
+                await interaction.followup.send(embed=embed)
+                
+                # ส่งล็อกไปยังช่องประวัติบิล
+                try:
+                    bill_history_channel = interaction.guild.get_channel(1393184006748635156)
+                    if bill_history_channel:
+                        log_embed = discord.Embed(
+                            title="📋 ล็อกการขาย",
+                            description=f"มีการขายใหม่ในเซิร์ฟเวอร์",
+                            color=0x3498db
+                        )
+                        log_embed.add_field(
+                            name="🧾 เลขที่ใบเสร็จ",
+                            value=bill_number,
+                            inline=True
+                        )
+                        log_embed.add_field(
+                            name="👤 ผู้ขาย",
+                            value=f"{interaction.user} ({interaction.user.id})",
+                            inline=True
+                        )
+                        log_embed.add_field(
+                            name="💰 ยอดรวม",
+                            value=f"{total_amount:,.0f} บาท",
+                            inline=True
+                        )
+                        log_embed.add_field(
+                            name="📦 รายการสินค้า",
+                            value=items_text,
+                            inline=False
+                        )
+                        log_embed.add_field(
+                            name="📍 ช่อง",
+                            value=f"{interaction.channel.mention}",
+                            inline=True
+                        )
+                        log_embed.add_field(
+                            name="📅 วันที่",
+                            value=f"<t:{int(interaction.created_at.timestamp())}:F>",
+                            inline=True
+                        )
+                        if self.notes:
+                            log_embed.add_field(
+                                name="📝 หมายเหตุ",
+                                value=self.notes,
+                                inline=False
+                            )
+                        log_embed.set_footer(text=f"ใบเสร็จเลขที่: {bill_number}")
+                        
+                        await bill_history_channel.send(embed=log_embed)
+                except Exception as e:
+                    print(f"❌ ไม่สามารถส่งล็อกไปยังช่องประวัติบิลได้: {e}")
+                
+                # ปิดการใช้งานปุ่ม
+                for item in self.children:
+                    item.disabled = True
+                await interaction.edit_original_response(view=self)
+                
+            else:
+                embed = discord.Embed(
+                    title="❌ เกิดข้อผิดพลาด",
+                    description="ไม่สามารถสร้างใบเสร็จได้",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถดำเนินการขายได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @discord.ui.button(label='ยกเลิก', style=discord.ButtonStyle.danger, emoji='❌')
+    async def cancel_sale(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="❌ ยกเลิกการขาย",
+            description="การขายถูกยกเลิกแล้ว",
+            color=0xe74c3c
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        # ปิดการใช้งานปุ่ม
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(view=self)
+
+class SalesChannelView(discord.ui.View):
+    def __init__(self, stock_manager):
+        super().__init__(timeout=None)
+        self.stock_manager = stock_manager
+    
+    @discord.ui.button(label='🛒 สร้างการขาย', style=discord.ButtonStyle.success, emoji='🛒')
+    async def create_sale(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = SalesModal(self.stock_manager)
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label='📋 ดูประวัติการขาย', style=discord.ButtonStyle.secondary, emoji='📋')
+    async def view_sales_history(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            # ดึงประวัติการขายจากชีต Bills
+            bills_sheet = self.stock_manager.spreadsheet.worksheet('Bills')
+            records = bills_sheet.get_all_records()
+            
+            # กรองเฉพาะใบเสร็จของผู้ใช้นี้
+            user_bills = {}
+            for record in records:
+                if record['ผู้ขาย'] == str(interaction.user):
+                    bill_number = record['เลขที่ใบเสร็จ']
+                    if bill_number not in user_bills:
+                        user_bills[bill_number] = []
+                    user_bills[bill_number].append(record)
+            
+            if not user_bills:
+                embed = discord.Embed(
+                    title="📋 ประวัติการขาย",
+                    description="ไม่มีประวัติการขาย",
+                    color=0xff6b6b
+                )
+            else:
+                embed = discord.Embed(
+                    title="📋 ประวัติการขาย",
+                    description=f"ประวัติการขายของ {interaction.user.mention}",
+                    color=0x3498db
+                )
+                
+                # แสดงใบเสร็จล่าสุด 5 ใบ
+                recent_bills = list(user_bills.items())[-5:]
+                
+                for bill_number, items in recent_bills:
+                    total_amount = 0
+                    items_text = ""
+                    
+                    for item in items:
+                        if item['ราคารวม']:
+                            total_amount += float(item['ราคารวม'])
+                        items_text += f"• {item['ชื่อสินค้า']} x {item['จำนวน']} {item['หน่วย']}\n"
+                    
+                    embed.add_field(
+                        name=f"🧾 {bill_number}",
+                        value=f"{items_text}💰 ยอดรวม: {total_amount:,.0f} บาท\n📅 {items[0]['วันที่']}",
+                        inline=False
+                    )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถดึงประวัติการขายได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label='📦 รายการสินค้า', style=discord.ButtonStyle.primary, emoji='📦', row=1)
+    async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        products = self.stock_manager.get_all_stock()
+        
+        if not products:
+            embed = discord.Embed(
+                title="📦 รายการสินค้า",
+                description="ไม่มีสินค้าในระบบ",
+                color=0xff6b6b
+            )
+            await interaction.followup.send(embed=embed, view=AdvancedStockView(self.stock_manager))
+        else:
+            # แสดงสินค้าเป็น card แยกต่างหาก
+            await self.show_product_cards(interaction, products)
+    
+    async def show_product_cards(self, interaction, products):
+        """แสดงสินค้าเป็น card แยกต่างหาก"""
+        try:
+            # สร้าง embed หลักสำหรับรายการสินค้า
+            main_embed = discord.Embed(
+                title="🏪 รายการสินค้าทั้งหมด",
+                description=f"พบสินค้าทั้งหมด {len(products)} รายการ",
+                color=0x4ecdc4
+            )
+            
+            # await interaction.followup.send(embed=main_embed, view=AdvancedStockView(self.stock_manager))
+            
+            # แสดงสินค้าแต่ละรายการเป็น card
+            for product in products[:10]:  # จำกัดที่ 10 รายการเพื่อป้องกัน spam
+                quantity = int(product.get('จำนวน', 0))
+                status_emoji = "⚠️" if quantity < 5 else "✅"
+                price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
+                description = product.get('คำอธิบาย', '')
+                image_url = product.get('รูปภาพURL', '')
+                
+                # สร้าง embed สำหรับแต่ละสินค้า
+                card_embed = discord.Embed(
+                    title=f"{product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+                    color=0x2ecc71 if quantity >= 5 else 0xe74c3c
+                )
+                
+                # เพิ่มข้อมูลในรูปแบบ card
+                card_embed.add_field(
+                    name="💰 Value",
+                    value=f"{price:,.0f}" if price > 0 else "ไม่ระบุราคา",
+                    inline=True
+                )
+                
+                card_embed.add_field(
+                    name="📋 Copy command",
+                    value=f"`!buy {product.get('ชื่อสินค้า', '')}`",
+                    inline=True
+                )
+                
+                card_embed.add_field(
+                    name="📞 Command Channel",
+                    value=f"#{interaction.channel.name}",
+                    inline=True
+                )
+                
+                if description:
+                    card_embed.add_field(
+                        name="📝 Description",
+                        value=description,
+                        inline=False
+                    )
+                
+                # เพิ่มข้อมูลสต็อก
+                card_embed.add_field(
+                    name="📦 สต็อก",
+                    value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
+                    inline=True
+                )
+                
+                card_embed.add_field(
+                    name="📅 อัปเดตล่าสุด",
+                    value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
+                    inline=True
+                )
+                
+                card_embed.add_field(
+                    name="🔄 สถานะ",
+                    value="✅ พร้อมใช้งาน" if quantity >= 5 else "⚠️ ใกล้หมด",
+                    inline=True
+                )
+                
+                # เพิ่มรูปภาพถ้ามี
+                if image_url:
+                    card_embed.set_image(url=image_url)
+                
+                # สร้าง view สำหรับปุ่มในแต่ละ card
+                card_view = ProductCardView(self.stock_manager, product.get('ชื่อสินค้า', ''))
+                
+                await interaction.followup.send(embed=card_embed, view=card_view)
+                
+        except Exception as e:
+            error_embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถแสดงรายการสินค้าได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=error_embed)
+    
+    @discord.ui.button(label='🛒 สร้างการขาย', style=discord.ButtonStyle.success, emoji='🛒', row=1)
+    async def create_sales_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        try:
+            # สร้างช่องแชทการขายส่วนตัว
+            from bot import create_sales_channel
+            
+            sales_channel = await create_sales_channel(interaction.guild, interaction.user)
+            
+            if sales_channel:
+                embed = discord.Embed(
+                    title="✅ สร้างห้องการขายสำเร็จ",
+                    description=f"ห้องการขายส่วนตัวของคุณ: {sales_channel.mention}",
+                    color=0x2ecc71
+                )
+                embed.add_field(
+                    name="📋 คำแนะนำ",
+                    value="""
+                    • ห้องนี้เป็นส่วนตัวเฉพาะคุณเท่านั้น
+                    • ใช้สำหรับสร้างการขายและจัดการใบเสร็จ
+                    • ห้องจะถูกลบหลังจาก 24 ชั่วโมงหากไม่มีการใช้งาน
+                    """,
+                    inline=False
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                embed = discord.Embed(
+                    title="❌ เกิดข้อผิดพลาด",
+                    description="ไม่สามารถสร้างห้องการขายได้",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถสร้างห้องการขายได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)

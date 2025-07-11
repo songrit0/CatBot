@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 import datetime
 import asyncio
-from ui_components import AdvancedStockView, StockModal, ProductSelectView, ConfirmationView, ImageUploadView
+from ui_components import AdvancedStockView, StockModal, ProductSelectView, ConfirmationView, ImageUploadView, SalesModal, SalesChannelView
 
 # โหลด environment variables
 load_dotenv()
@@ -28,6 +28,15 @@ LOW_STOCK_THRESHOLD = 5
 
 # Dictionary เก็บข้อมูลผู้ใช้ที่กำลังรอการอัปโหลดรูป
 pending_image_uploads = {}
+
+# Dictionary เก็บข้อมูลการขายที่กำลังดำเนินการ
+active_sales = {}
+
+# Dictionary เก็บช่องแชทการขายสำหรับแต่ละผู้ใช้
+sales_channels = {}
+
+# ID ของช่องประวัติบิล
+BILL_HISTORY_CHANNEL_ID = 1393184006748635156
 
 class StockManager:
     def __init__(self):
@@ -137,6 +146,34 @@ class StockManager:
                     values=[['วันที่', 'ชื่อผู้ใช้', 'การทำรายการ', 'ชื่อสินค้า', 'จำนวน', 'หมายเหตุ']]
                 )
                 print("✅ สร้างชีต History เรียบร้อย")
+            
+            # ตรวจสอบและสร้างชีต Bills (ใบเสร็จ)
+            try:
+                bills_sheet = self.spreadsheet.worksheet('Bills')
+                print("✅ พบชีต Bills แล้ว")
+                
+                # ตรวจสอบว่าชีตมีหัวตารางหรือไม่
+                try:
+                    first_row = bills_sheet.row_values(1)
+                    if not first_row or len(first_row) < 10 or first_row[0] != 'เลขที่ใบเสร็จ':
+                        print("⚠️ หัวตารางของชีต Bills ไม่ถูกต้อง กำลังแก้ไข...")
+                        bills_sheet.update(
+                            range_name='A1:J1',
+                            values=[['เลขที่ใบเสร็จ', 'วันที่', 'ผู้ขาย', 'ชื่อสินค้า', 'จำนวน', 'หน่วย', 'ราคาต่อหน่วย', 'ราคารวม', 'ยอดรวม', 'หมายเหตุ']]
+                        )
+                        print("✅ แก้ไขหัวตารางชีต Bills เรียบร้อย")
+                except Exception as e:
+                    print(f"⚠️ ไม่สามารถตรวจสอบหัวตารางชีต Bills ได้: {e}")
+                    
+            except gspread.WorksheetNotFound:
+                print("⚠️ ไม่พบชีต Bills กำลังสร้างใหม่...")
+                bills_sheet = self.spreadsheet.add_worksheet(title='Bills', rows=1000, cols=10)
+                # ตั้งค่าหัวตาราง
+                bills_sheet.update(
+                    range_name='A1:J1',
+                    values=[['เลขที่ใบเสร็จ', 'วันที่', 'ผู้ขาย', 'ชื่อสินค้า', 'จำนวน', 'หน่วย', 'ราคาต่อหน่วย', 'ราคารวม', 'ยอดรวม', 'หมายเหตุ']]
+                )
+                print("✅ สร้างชีต Bills เรียบร้อย")
                 
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการสร้างชีต: {e}")
@@ -357,6 +394,119 @@ class StockManager:
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการตรวจสอบสินค้าต่ำ: {e}")
             return []
+    
+    def generate_bill_number(self):
+        """สร้างเลขที่ใบเสร็จ"""
+        try:
+            bills_sheet = self.spreadsheet.worksheet('Bills')
+            records = bills_sheet.get_all_records()
+            
+            # สร้างเลขที่ใบเสร็จในรูปแบบ YYYYMMDD-XXX
+            today = datetime.datetime.now().strftime('%Y%m%d')
+            today_bills = [record for record in records if record['เลขที่ใบเสร็จ'].startswith(today)]
+            
+            next_number = len(today_bills) + 1
+            bill_number = f"{today}-{next_number:03d}"
+            
+            return bill_number
+            
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการสร้างเลขที่ใบเสร็จ: {e}")
+            return f"{datetime.datetime.now().strftime('%Y%m%d')}-001"
+    
+    def create_bill(self, seller, items, notes=""):
+        """สร้างใบเสร็จ"""
+        try:
+            bills_sheet = self.spreadsheet.worksheet('Bills')
+            bill_number = self.generate_bill_number()
+            
+            total_amount = 0
+            current_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # เพิ่มรายการสินค้าในใบเสร็จ
+            for item in items:
+                product_name = item['name']
+                quantity = item['quantity']
+                unit_price = item['price']
+                unit = item['unit']
+                item_total = quantity * unit_price
+                total_amount += item_total
+                
+                # ลดสต็อกสินค้า
+                self.remove_stock(product_name, quantity, seller)
+                
+                # เพิ่มรายการในชีต Bills
+                try:
+                    existing_records = bills_sheet.get_all_records()
+                    next_row = len(existing_records) + 2
+                except:
+                    next_row = 2
+                
+                bills_sheet.update(
+                    range_name=f'A{next_row}:J{next_row}',
+                    values=[[
+                        bill_number,
+                        current_date,
+                        str(seller),
+                        product_name,
+                        quantity,
+                        unit,
+                        unit_price,
+                        item_total,
+                        total_amount if item == items[-1] else "",  # แสดงยอดรวมเฉพาะบรรทัดสุดท้าย
+                        notes if item == items[-1] else ""  # แสดงหมายเหตุเฉพาะบรรทัดสุดท้าย
+                    ]]
+                )
+            
+            # บันทึกประวัติการขาย
+            item_names = [item['name'] for item in items]
+            self.add_history(seller, 'การขาย', ', '.join(item_names), len(items), f'ใบเสร็จ: {bill_number}, ยอดรวม: {total_amount:,.0f}')
+            
+            return bill_number, total_amount
+            
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการสร้างใบเสร็จ: {e}")
+            return None, 0
+    
+    def get_bill_details(self, bill_number):
+        """ดึงรายละเอียดใบเสร็จ"""
+        try:
+            bills_sheet = self.spreadsheet.worksheet('Bills')
+            records = bills_sheet.get_all_records()
+            
+            bill_items = []
+            for record in records:
+                if record['เลขที่ใบเสร็จ'] == bill_number:
+                    bill_items.append(record)
+            
+            return bill_items
+            
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการดึงรายละเอียดใบเสร็จ: {e}")
+            return []
+
+class Cart:
+    def __init__(self):
+        self.items = []  # รายการสินค้าในรถเข็น
+
+    def add_item(self, product_name, quantity, price, unit):
+        self.items.append({
+            'product_name': product_name,
+            'quantity': quantity,
+            'price': price,
+            'unit': unit
+        })
+
+    def clear(self):
+        self.items = []
+
+    def get_total(self):
+        return sum(item['price'] * item['quantity'] for item in self.items)
+
+    def get_items(self):
+        return self.items
+
+user_carts = {}
 
 # สร้าง instance ของ StockManager
 stock_manager = StockManager()
@@ -368,6 +518,9 @@ async def on_ready():
     
     # ตรวจสอบสินค้าใกล้หมดทุก 30 นาที
     bot.loop.create_task(low_stock_checker())
+    
+    # ลบช่องแชทการขายที่ไม่ใช้งานแล้ว
+    bot.loop.create_task(cleanup_sales_channels())
 
 async def low_stock_checker():
     """ตรวจสอบสินค้าใกล้หมดและแจ้งเตือนอัตโนมัติ"""
@@ -400,6 +553,96 @@ async def low_stock_checker():
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการตรวจสอบสินค้าใกล้หมด: {e}")
 
+async def create_sales_channel(guild, user):
+    """สร้างช่องแชทการขายสำหรับผู้ใช้"""
+    try:
+        # ตรวจสอบว่ามีช่องแชทการขายอยู่แล้วหรือไม่
+        existing_channel = None
+        for channel in guild.text_channels:
+            if channel.name == f"การขาย-{user.name.lower()}":
+                existing_channel = channel
+                break
+        
+        if existing_channel:
+            # เพิ่มผู้ใช้เข้าช่องที่มีอยู่
+            await existing_channel.set_permissions(user, read_messages=True, send_messages=True)
+            return existing_channel
+        
+        # สร้างช่องแชทใหม่
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        }
+        
+        channel = await guild.create_text_channel(
+            name=f"การขาย-{user.name.lower()}",
+            overwrites=overwrites,
+            topic=f"ห้องการขายส่วนตัวของ {user.display_name}",
+            reason=f"สร้างห้องการขายสำหรับ {user}"
+        )
+        
+        # บันทึกช่องแชทในระบบ
+        sales_channels[user.id] = channel.id
+        
+        # ส่งข้อความต้อนรับและเมนูการขาย
+        embed = discord.Embed(
+            title="🛒 ห้องการขายส่วนตัว",
+            description=f"ยินดีต้อนรับสู่ห้องการขายของ {user.mention}",
+            color=0x2ecc71
+        )
+        embed.add_field(
+            name="📋 คำแนะนำการใช้งาน",
+            value="""
+            • ใช้ปุ่ม "🛒 สร้างการขาย" เพื่อสร้างรายการขายใหม่
+            • ใช้ปุ่ม "📋 ดูประวัติการขาย" เพื่อดูประวัติการขาย
+            • ห้องนี้จะถูกลบหลังจาก 24 ชั่วโมงหากไม่มีการใช้งาน
+            """,
+            inline=False
+        )
+        embed.add_field(
+            name="🔒 ความเป็นส่วนตัว",
+            value="เฉพาะคุณเท่านั้นที่สามารถเห็นและใช้งานห้องนี้ได้",
+            inline=False
+        )
+        
+        await channel.send(embed=embed, view=SalesChannelView(stock_manager))
+        
+        return channel
+        
+    except Exception as e:
+        print(f"❌ เกิดข้อผิดพลาดในการสร้างช่องแชทการขาย: {e}")
+        return None
+
+async def cleanup_sales_channels():
+    """ลบช่องแชทการขายที่ไม่ใช้งานแล้ว"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # ทุก 1 ชั่วโมง
+            
+            for guild in bot.guilds:
+                for channel in guild.text_channels:
+                    if channel.name.startswith("การขาย-"):
+                        # ตรวจสอบว่ามีข้อความล่าสุดเมื่อไหร่
+                        try:
+                            last_message = None
+                            async for message in channel.history(limit=1):
+                                last_message = message
+                                break
+                            
+                            if last_message:
+                                # ลบช่องแชทหากไม่มีข้อความมานานกว่า 24 ชั่วโมง
+                                time_diff = discord.utils.utcnow() - last_message.created_at
+                                if time_diff.total_seconds() > 86400:  # 24 ชั่วโมง
+                                    await channel.delete(reason="ไม่มีการใช้งานมานานกว่า 24 ชั่วโมง")
+                                    print(f"✅ ลบช่องแชทการขาย: {channel.name}")
+                        except Exception as e:
+                            print(f"❌ เกิดข้อผิดพลาดในการตรวจสอบช่องแชท {channel.name}: {e}")
+                        
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการลบช่องแชทการขาย: {e}")
+            await asyncio.sleep(3600)  # รอ 1 ชั่วโมงก่อนลองใหม่
+            
 @bot.command(name='add')
 async def add_stock(ctx, product_name: str, quantity: int, unit: str, price: float = 0):
     """เพิ่มสินค้าเข้าสต๊อก"""
@@ -697,6 +940,526 @@ async def upload_help(ctx):
         inline=False
     )
     
+    await ctx.send(embed=embed)
+
+@bot.command(name='bill')
+async def view_bill(ctx, bill_number: str):
+    """ดูรายละเอียดใบเสร็จ"""
+    try:
+        bill_items = stock_manager.get_bill_details(bill_number)
+        
+        if not bill_items:
+            embed = discord.Embed(
+                title="❌ ไม่พบใบเสร็จ",
+                description=f"ไม่พบใบเสร็จหมายเลข **{bill_number}**",
+                color=0xe74c3c
+            )
+            await ctx.send(embed=embed)
+            return
+        
+        # สร้าง embed แสดงรายละเอียดใบเสร็จ
+        embed = discord.Embed(
+            title="🧾 รายละเอียดใบเสร็จ",
+            description=f"เลขที่ใบเสร็จ: **{bill_number}**",
+            color=0x3498db
+        )
+        
+        # ข้อมูลทั่วไป
+        embed.add_field(
+            name="👤 ผู้ขาย",
+            value=bill_items[0]['ผู้ขาย'],
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📅 วันที่",
+            value=bill_items[0]['วันที่'],
+            inline=True
+        )
+        
+        # รายการสินค้า
+        items_text = ""
+        total_amount = 0
+        
+        for item in bill_items:
+            item_total = float(item['ราคารวม']) if item['ราคารวม'] else 0
+            total_amount += item_total
+            
+            items_text += f"• {item['ชื่อสินค้า']} x {item['จำนวน']} {item['หน่วย']}\n"
+            items_text += f"  ราคา: {float(item['ราคาต่อหน่วย']):,.0f} x {item['จำนวน']} = {item_total:,.0f} บาท\n"
+        
+        embed.add_field(
+            name="📦 รายการสินค้า",
+            value=items_text,
+            inline=False
+        )
+        
+        embed.add_field(
+            name="💰 ยอดรวมทั้งหมด",
+            value=f"{total_amount:,.0f} บาท",
+            inline=False
+        )
+        
+        # หมายเหตุ
+        if bill_items[0]['หมายเหตุ']:
+            embed.add_field(
+                name="📝 หมายเหตุ",
+                value=bill_items[0]['หมายเหตุ'],
+                inline=False
+            )
+        
+        embed.set_footer(text=f"ใบเสร็จเลขที่: {bill_number}")
+        
+        await ctx.send(embed=embed)
+        
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ เกิดข้อผิดพลาด",
+            description=f"ไม่สามารถดึงข้อมูลใบเสร็จได้: {str(e)}",
+            color=0xe74c3c
+        )
+        await ctx.send(embed=embed)
+
+@bot.command(name='sales')
+async def sales_menu(ctx):
+    """แสดงเมนูการขาย"""
+    embed = discord.Embed(
+        title="🛒 ระบบการขาย",
+        description="เลือกใช้งานฟีเจอร์การขายด้านล่าง",
+        color=0x2ecc71
+    )
+    
+    embed.add_field(
+        name="📝 คำสั่งการขาย",
+        value="`!bill [เลขที่ใบเสร็จ]` - ดูรายละเอียดใบเสร็จ\n`!sales` - เมนูการขาย",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🛒 การสร้างการขาย",
+        value="1. คลิกปุ่ม \"🛒 สร้างการขาย\" ด้านล่าง\n2. ระบบจะสร้างห้องการขายส่วนตัวให้คุณ\n3. ใช้เมนูในห้องเพื่อสร้างการขาย",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📋 ประวัติการขาย",
+        value=f"ประวัติการขายทั้งหมดจะถูกส่งไปยัง <#{BILL_HISTORY_CHANNEL_ID}>",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔒 ความปลอดภัย",
+        value="ห้องการขายเป็นส่วนตัว เฉพาะผู้ขายเท่านั้นที่เข้าถึงได้",
+        inline=False
+    )
+    
+    # สร้างปุ่มสำหรับสร้างการขาย
+    view = discord.ui.View()
+    
+    async def create_sales_callback(interaction):
+        await interaction.response.defer()
+        
+        try:
+            sales_channel = await create_sales_channel(interaction.guild, interaction.user)
+            
+            if sales_channel:
+                embed = discord.Embed(
+                    title="✅ สร้างห้องการขายสำเร็จ",
+                    description=f"ห้องการขายส่วนตัวของคุณ: {sales_channel.mention}",
+                    color=0x2ecc71
+                )
+                embed.add_field(
+                    name="📋 คำแนะนำ",
+                    value="• ห้องนี้เป็นส่วนตัวเฉพาะคุณเท่านั้น\n• ใช้สำหรับสร้างการขายและจัดการใบเสร็จ\n• ห้องจะถูกลบหลังจาก 24 ชั่วโมงหากไม่มีการใช้งาน",
+                    inline=False
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                embed = discord.Embed(
+                    title="❌ เกิดข้อผิดพลาด",
+                    description="ไม่สามารถสร้างห้องการขายได้",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"ไม่สามารถสร้างห้องการขายได้: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    button = discord.ui.Button(
+        label="🛒 สร้างการขาย",
+        style=discord.ButtonStyle.success,
+        emoji="🛒"
+    )
+    button.callback = create_sales_callback
+    view.add_item(button)
+    
+    await ctx.send(embed=embed, view=view)
+
+async def add_item_to_cart_helper(user_id: str, product_name: str, quantity: int):
+    """Helper function to add items to cart with validation and return result"""
+    if user_id not in user_carts:
+        user_carts[user_id] = Cart()
+    
+    # ค้นหาสินค้าในสต็อก
+    products = stock_manager.get_all_stock()
+    product_found = False
+    
+    for product in products:
+        if product['ชื่อสินค้า'].lower() == product_name.lower():
+            # ตรวจสอบสต็อกเพียงพอหรือไม่
+            available_quantity = int(product.get('จำนวน', 0))
+            if available_quantity < quantity:
+                return {
+                    'success': False,
+                    'error_type': 'insufficient_stock',
+                    'message': f"สินค้า **{product_name}** เหลือเพียง {available_quantity} {product.get('หน่วย', 'ชิ้น')}",
+                    'available_quantity': available_quantity,
+                    'unit': product.get('หน่วย', 'ชิ้น')
+                }
+            
+            price = float(product.get('ราคา', 0))
+            unit = product.get('หน่วย', 'ชิ้น')
+            user_carts[user_id].add_item(product_name, quantity, price, unit)
+            
+            # แสดงรายการสินค้าในรถเข็นทั้งหมด
+            cart = user_carts[user_id]
+            cart_items = cart.get_items()
+            total_price = cart.get_total()
+            
+            # สร้างรายการสินค้าในรถเข็น
+            cart_list = ""
+            for i, item in enumerate(cart_items, 1):
+                item_total = item['price'] * item['quantity']
+                cart_list += f"{i}. **{item['product_name']}** x{item['quantity']} {item['unit']} = {item_total:,.0f} บาท\n"
+            
+            return {
+                'success': True,
+                'product_name': product_name,
+                'quantity': quantity,
+                'cart_items': cart_items,
+                'cart_list': cart_list,
+                'total_price': total_price
+            }
+    
+    # ไม่พบสินค้า
+    return {
+        'success': False,
+        'error_type': 'product_not_found',
+        'message': f"ไม่พบสินค้า **{product_name}** ในระบบ"
+    }
+
+@bot.command()
+async def add_to_cart(ctx, product_name: str, quantity: int):
+    """เพิ่มสินค้าเข้ารถเข็นของผู้ใช้"""
+    user_id = str(ctx.author.id)
+    
+    result = await add_item_to_cart_helper(user_id, product_name, quantity)
+    
+    if result['success']:
+        cart_items = result['cart_items']
+        total_price = result['total_price']
+        
+        embed = discord.Embed(
+            title="✅ เพิ่มลงรถเข็นสำเร็จ",
+            description=f"เพิ่ม **{product_name}** x{quantity} เข้ารถเข็นแล้ว!",
+            color=0x2ecc71
+        )
+        
+        # แสดงรายการสินค้าในรถเข็นทั้งหมด
+        cart_list = ""
+        for i, item in enumerate(cart_items, 1):
+            item_total = item['price'] * item['quantity']
+            cart_list += f"{i}. **{item['product_name']}** x{item['quantity']} {item['unit']} = {item_total:,.0f} บาท\n"
+        
+        embed.add_field(
+            name="🛒 รถเข็นของคุณ",
+            value=cart_list if cart_list else "ไม่มีสินค้า",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="💰 ยอดรวมทั้งหมด",
+            value=f"{total_price:,.0f} บาท",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📦 จำนวนรายการ",
+            value=f"{len(cart_items)} รายการ",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="💡 คำแนะนำ",
+            value="ใช้คำสั่ง `!checkout` เพื่อชำระเงิน\nใช้คำสั่ง `!cart` เพื่อดูรถเข็น\nใช้คำสั่ง `!clear_cart` เพื่อเคลียร์รถเข็น",
+            inline=False
+        )
+        
+        await ctx.send(embed=embed)
+    else:
+        error_message = result['message']
+        
+        embed = discord.Embed(
+            title="❌ เกิดข้อผิดพลาด",
+            description=error_message,
+            color=0xe74c3c
+        )
+        
+        if result['error_type'] == 'insufficient_stock':
+            available_quantity = result['available_quantity']
+            unit = result['unit']
+            embed.add_field(
+                name="📉 สต็อกไม่เพียงพอ",
+                value=f"สินค้า **{product_name}** เหลือเพียง {available_quantity} {unit}",
+                inline=False
+            )
+        
+        await ctx.send(embed=embed)
+
+@bot.command()
+async def checkout(ctx):
+    """ออกใบเสร็จและเคลียร์รถเข็น"""
+    user_id = str(ctx.author.id)
+    if user_id not in user_carts or not user_carts[user_id].get_items():
+        embed = discord.Embed(
+            title="❌ รถเข็นว่างเปล่า",
+            description="ไม่มีสินค้าในรถเข็นของคุณ",
+            color=0xe74c3c
+        )
+        embed.add_field(
+            name="💡 คำแนะนำ",
+            value="ใช้คำสั่ง `!add_to_cart [ชื่อสินค้า] [จำนวน]` เพื่อเพิ่มสินค้า",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    cart = user_carts[user_id]
+    items = cart.get_items()
+    
+    try:
+        # ตรวจสอบสต็อกก่อนขาย
+        stock_errors = []
+        for item in items:
+            product = stock_manager.check_stock(item['product_name'])
+            if product:
+                available_quantity = int(product.get('จำนวน', 0))
+                if available_quantity < item['quantity']:
+                    stock_errors.append(f"❌ {item['product_name']}: สต็อกไม่เพียงพอ (มี {available_quantity} ต้องการ {item['quantity']})")
+            else:
+                stock_errors.append(f"❌ {item['product_name']}: ไม่พบสินค้าในระบบ")
+        
+        if stock_errors:
+            embed = discord.Embed(
+                title="❌ พบข้อผิดพลาด",
+                description="ไม่สามารถชำระเงินได้เนื่องจากมีปัญหากับสต็อก",
+                color=0xe74c3c
+            )
+            embed.add_field(
+                name="รายการปัญหา",
+                value="\n".join(stock_errors),
+                inline=False
+            )
+            await ctx.send(embed=embed)
+            return
+        
+        # แปลงข้อมูลสำหรับสร้างใบเสร็จ
+        bill_items = []
+        for item in items:
+            bill_items.append({
+                'name': item['product_name'],
+                'quantity': item['quantity'],
+                'price': item['price'],
+                'unit': item['unit']
+            })
+        
+        # สร้างใบเสร็จ
+        bill_number, total_amount = stock_manager.create_bill(
+            ctx.author,
+            bill_items,
+            f"ชำระผ่านรถเข็น - {len(items)} รายการ"
+        )
+        
+        if bill_number:
+            # สร้าง embed ใบเสร็จ
+            embed = discord.Embed(
+                title="🧾 ใบเสร็จการขาย",
+                description=f"เลขที่ใบเสร็จ: **{bill_number}**",
+                color=0x2ecc71
+            )
+            
+            embed.add_field(
+                name="👤 ผู้ซื้อ",
+                value=f"{ctx.author.mention}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📅 วันที่",
+                value=f"<t:{int(ctx.message.created_at.timestamp())}:F>",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="💰 ยอดรวม",
+                value=f"{total_amount:,.0f} บาท",
+                inline=True
+            )
+            
+            # รายการสินค้า
+            items_text = ""
+            for item in items:
+                item_total = item['price'] * item['quantity']
+                items_text += f"• {item['product_name']} x {item['quantity']} {item['unit']} = {item_total:,.0f} บาท\n"
+            
+            embed.add_field(
+                name="📦 รายการสินค้า",
+                value=items_text,
+                inline=False
+            )
+            
+            embed.set_footer(text=f"ใบเสร็จเลขที่: {bill_number}")
+            
+            await ctx.send(embed=embed)
+            
+            # ส่งล็อกไปยังช่องประวัติบิลถ้ามี
+            try:
+                bill_history_channel = ctx.guild.get_channel(BILL_HISTORY_CHANNEL_ID)
+                if bill_history_channel:
+                    log_embed = discord.Embed(
+                        title="🛒 การขายผ่านรถเข็น",
+                        description=f"มีการชำระเงินผ่านรถเข็น",
+                        color=0x3498db
+                    )
+                    log_embed.add_field(
+                        name="🧾 เลขที่ใบเสร็จ",
+                        value=bill_number,
+                        inline=True
+                    )
+                    log_embed.add_field(
+                        name="👤 ผู้ซื้อ",
+                        value=f"{ctx.author} ({ctx.author.id})",
+                        inline=True
+                    )
+                    log_embed.add_field(
+                        name="💰 ยอดรวม",
+                        value=f"{total_amount:,.0f} บาท",
+                        inline=True
+                    )
+                    log_embed.add_field(
+                        name="📦 รายการสินค้า",
+                        value=items_text,
+                        inline=False
+                    )
+                    log_embed.add_field(
+                        name="📍 ช่อง",
+                        value=f"{ctx.channel.mention}",
+                        inline=True
+                    )
+                    log_embed.add_field(
+                        name="📅 วันที่",
+                        value=f"<t:{int(ctx.message.created_at.timestamp())}:F>",
+                        inline=True
+                    )
+                    log_embed.set_footer(text=f"ใบเสร็จเลขที่: {bill_number}")
+                    
+                    await bill_history_channel.send(embed=log_embed)
+            except Exception as e:
+                print(f"❌ ไม่สามารถส่งล็อกไปยังช่องประวัติบิลได้: {e}")
+            
+            # เคลียร์รถเข็น
+            cart.clear()
+            
+        else:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description="ไม่สามารถสร้างใบเสร็จได้",
+                color=0xe74c3c
+            )
+            await ctx.send(embed=embed)
+            
+    except Exception as e:
+        embed = discord.Embed(
+            title="❌ เกิดข้อผิดพลาด",
+            description=f"ไม่สามารถชำระเงินได้: {str(e)}",
+            color=0xe74c3c
+        )
+        await ctx.send(embed=embed)
+
+@bot.command()
+async def cart(ctx):
+    """ดูรถเข็นสินค้าของผู้ใช้"""
+    user_id = str(ctx.author.id)
+    if user_id not in user_carts or not user_carts[user_id].get_items():
+        embed = discord.Embed(
+            title="🛒 รถเข็นของคุณ",
+            description="รถเข็นว่างเปล่า",
+            color=0xff6b6b
+        )
+        embed.add_field(
+            name="💡 คำแนะนำ",
+            value="ใช้คำสั่ง `!add_to_cart [ชื่อสินค้า] [จำนวน]` เพื่อเพิ่มสินค้า",
+            inline=False
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    cart = user_carts[user_id]
+    items = cart.get_items()
+    total = cart.get_total()
+    
+    embed = discord.Embed(
+        title="🛒 รถเข็นของคุณ",
+        description=f"มีสินค้า {len(items)} รายการ",
+        color=0x3498db
+    )
+    
+    for item in items:
+        item_total = item['price'] * item['quantity']
+        embed.add_field(
+            name=f"📦 {item['product_name']}",
+            value=f"จำนวน: {item['quantity']} {item['unit']}\nราคา: {item['price']:,.0f} x {item['quantity']} = {item_total:,.0f} บาท",
+            inline=True
+        )
+    
+    embed.add_field(
+        name="💰 ยอดรวมทั้งหมด",
+        value=f"{total:,.0f} บาท",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💡 คำแนะนำ",
+        value="ใช้คำสั่ง `!checkout` เพื่อชำระเงิน\nใช้คำสั่ง `!clear_cart` เพื่อเคลียร์รถเข็น",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+@bot.command()
+async def clear_cart(ctx):
+    """เคลียร์รถเข็นสินค้าของผู้ใช้"""
+    user_id = str(ctx.author.id)
+    if user_id not in user_carts or not user_carts[user_id].get_items():
+        embed = discord.Embed(
+            title="🛒 รถเข็นของคุณ",
+            description="รถเข็นว่างเปล่าอยู่แล้ว",
+            color=0xff6b6b
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    user_carts[user_id].clear()
+    embed = discord.Embed(
+        title="✅ เคลียร์รถเข็นสำเร็จ",
+        description="รถเข็นของคุณถูกล้างแล้ว",
+        color=0x2ecc71
+    )
     await ctx.send(embed=embed)
 
 # เพิ่มฟังก์ชันรองรับการอัปโหลดรูปจาก Discord message
