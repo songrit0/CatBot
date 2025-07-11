@@ -1,8 +1,51 @@
 import discord
 from discord.ext import commands
+from discord.ui import View, Button, Modal, TextInput, Select
+from datetime import datetime
+import json
+import os
 import asyncio
-import requests
-import io
+from ui.views.product_card_view import ProductCardView
+
+# ฟังก์ชันช่วยสำหรับการลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย
+async def remove_seller_permission(interaction, seller_user):
+    """ลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย"""
+    try:
+        # ตรวจสอบว่าเป็นห้องที่สามารถจัดการสิทธิ์ได้
+        if isinstance(interaction.channel, discord.TextChannel):
+            # ลบสิทธิ์ของผู้ขายออกจากห้องนี้
+            overwrite = discord.PermissionOverwrite()
+            overwrite.view_channel = False
+            overwrite.send_messages = False
+            overwrite.read_message_history = False
+            
+            await interaction.channel.set_permissions(seller_user, overwrite=overwrite)
+            
+            # ส่งข้อความแจ้งเตือนในช่อง (ถ้าจำเป็น)
+            try:
+                embed = discord.Embed(
+                    title="🔒 ห้องถูกปิดการเข้าถึง",
+                    description=f"สิทธิ์การเข้าถึงของ {seller_user.mention} ถูกลบออกจากห้องนี้หลังจากการขายเสร็จสิ้น",
+                    color=0xff6b6b
+                )
+                embed.add_field(
+                    name="📝 หมายเหตุ",
+                    value="นี่เป็นการดำเนินการอัตโนมัติหลังจากแสดงใบเสร็จการขาย",
+                    inline=False
+                )
+                await interaction.followup.send(embed=embed, ephemeral=False)
+            except:
+                pass  # ถ้าไม่สามารถส่งข้อความได้ก็ข้าม
+            
+            print(f"✅ ลบสิทธิ์ผู้ขาย {seller_user.name} ({seller_user.id}) ออกจากห้อง {interaction.channel.name} ({interaction.channel.id}) เรียบร้อยแล้ว")
+            
+        else:
+            print(f"❌ ไม่สามารถลบสิทธิ์ได้: ห้องนี้ไม่ใช่ TextChannel")
+            
+    except discord.Forbidden:
+        print(f"❌ ไม่มีสิทธิ์ในการจัดการสิทธิ์ของห้อง {interaction.channel.name}")
+    except Exception as e:
+        print(f"❌ เกิดข้อผิดพลาดในการลบสิทธิ์: {e}")
 
 class StockModal(discord.ui.Modal):
     def __init__(self, action_type, stock_manager):
@@ -238,106 +281,106 @@ class AdvancedStockView(discord.ui.View):
     async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         
+        # ใช้คำสั่ง !products เพื่อแสดงสินค้าเป็น card
+        embed = discord.Embed(
+            title="🏪 รายการสินค้าทั้งหมด",
+            description="กำลังแสดงสินค้าทั้งหมดในรูปแบบ Product Card",
+            color=0x4ecdc4
+        )
+        embed.add_field(
+            name="💡 คำแนะนำ",
+            value="• สินค้าจะถูกแสดงเป็น card แยกต่างหาก\n• แต่ละ card จะมีปุ่มสำหรับการซื้อ\n• คุณสามารถเลือกซื้อทันทีหรือเพิ่มเข้ารถเข็น",
+            inline=False
+        )
+        await interaction.followup.send(embed=embed)
+        
+        # เรียกใช้ฟังก์ชัน products
         products = self.stock_manager.get_all_stock()
         
         if not products:
-            embed = discord.Embed(
-                title="📦 รายการสินค้า",
-                description="ไม่มีสินค้าในระบบ",
+            no_products_embed = discord.Embed(
+                title="📦 ไม่มีสินค้าในระบบ",
+                description="ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้าก่อน",
                 color=0xff6b6b
             )
-            await interaction.followup.send(embed=embed, view=AdvancedStockView(self.stock_manager))
-        else:
-            # แสดงสินค้าเป็น card แยกต่างหาก
-            await self.show_product_cards(interaction, products)
+            await interaction.followup.send(embed=no_products_embed)
+            return
+        
+        # แสดงสินค้าแต่ละรายการเป็น card พร้อมปุ่ม
+        from ui.views.product_card_view import ProductCardView
+        
+        for product in products:
+            quantity = int(product.get('จำนวน', 0))
+            status_emoji = "⚠️" if quantity < 5 else "✅"
+            price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
+            
+            embed = discord.Embed(
+                title=f"{status_emoji} {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+                color=0xe74c3c if quantity < 5 else 0x2ecc71
+            )
+            
+            # ข้อมูลพื้นฐาน
+            embed.add_field(
+                name="📦 จำนวน",
+                value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
+                inline=True
+            )
+            
+            if price > 0:
+                embed.add_field(
+                    name="💰 ราคา",
+                    value=f"{price:,.0f} บาท",
+                    inline=True
+                )
+            
+            embed.add_field(
+                name="🆔 ID",
+                value=f"#{product.get('ID', 'N/A')}",
+                inline=True
+            )
+            
+            # คำอธิบาย
+            if product.get('คำอธิบาย'):
+                embed.add_field(
+                    name="📝 คำอธิบาย",
+                    value=product.get('คำอธิบาย'),
+                    inline=False
+                )
+            
+            # วันที่อัปเดต
+            embed.add_field(
+                name="🕒 อัปเดตล่าสุด",
+                value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
+                inline=False
+            )
+            
+            # รูปภาพ
+            if product.get('รูปภาพURL'):
+                embed.set_image(url=product.get('รูปภาพURL'))
+            
+            # แจ้งเตือนสต็อกต่ำ
+            if quantity < 5:
+                embed.add_field(
+                    name="⚠️ แจ้งเตือน",
+                    value="สินค้าใกล้หมดแล้ว",
+                    inline=False
+                )
+            
+            # สถานะสินค้า
+            if quantity == 0:
+                embed.add_field(
+                    name="🚫 สถานะ",
+                    value="สินค้าหมด",
+                    inline=False
+                )
+                embed.color = 0x95a5a6
+            
+            # ส่งเป็น card พร้อมปุ่ม
+            await interaction.followup.send(embed=embed, view=ProductCardView(product, self.stock_manager))
+            
+            # รอเล็กน้อยเพื่อไม่ให้ spam
+            await asyncio.sleep(0.5)
     
-    async def show_product_cards(self, interaction, products):
-        """แสดงสินค้าเป็น card แยกต่างหาก"""
-        try:
-            # สร้าง embed หลักสำหรับรายการสินค้า
-            main_embed = discord.Embed(
-                title="🏪 รายการสินค้าทั้งหมด",
-                description=f"พบสินค้าทั้งหมด {len(products)} รายการ",
-                color=0x4ecdc4
-            )
-            
-            # await interaction.followup.send(embed=main_embed, view=AdvancedStockView(self.stock_manager))
-            
-            # แสดงสินค้าแต่ละรายการเป็น card
-            for product in products[:10]:  # จำกัดที่ 10 รายการเพื่อป้องกัน spam
-                quantity = int(product.get('จำนวน', 0))
-                status_emoji = "⚠️" if quantity < 5 else "✅"
-                price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
-                description = product.get('คำอธิบาย', '')
-                image_url = product.get('รูปภาพURL', '')
-                
-                # สร้าง embed สำหรับแต่ละสินค้า
-                card_embed = discord.Embed(
-                    title=f"{product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
-                    color=0x2ecc71 if quantity >= 5 else 0xe74c3c
-                )
-                
-                # เพิ่มข้อมูลในรูปแบบ card
-                card_embed.add_field(
-                    name="💰 Value",
-                    value=f"{price:,.0f}" if price > 0 else "ไม่ระบุราคา",
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="📋 Copy command",
-                    value=f"`!buy {product.get('ชื่อสินค้า', '')}`",
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="📞 Command Channel",
-                    value=f"#{interaction.channel.name}",
-                    inline=True
-                )
-                
-                if description:
-                    card_embed.add_field(
-                        name="📝 Description",
-                        value=description,
-                        inline=False
-                    )
-                
-                # เพิ่มข้อมูลสต็อก
-                card_embed.add_field(
-                    name="📦 สต็อก",
-                    value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="📅 อัปเดตล่าสุด",
-                    value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="🔄 สถานะ",
-                    value="✅ พร้อมใช้งาน" if quantity >= 5 else "⚠️ ใกล้หมด",
-                    inline=True
-                )
-                
-                # เพิ่มรูปภาพถ้ามี
-                if image_url:
-                    card_embed.set_image(url=image_url)
-                
-                # สร้าง view สำหรับปุ่มในแต่ละ card
-                card_view = ProductCardView(self.stock_manager, product.get('ชื่อสินค้า', ''))
-                
-                await interaction.followup.send(embed=card_embed, view=card_view)
-                
-        except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ เกิดข้อผิดพลาด",
-                description=f"ไม่สามารถแสดงรายการสินค้าได้: {str(e)}",
-                color=0xe74c3c
-            )
-            await interaction.followup.send(embed=error_embed)
     @discord.ui.button(label='เพิ่มรูปภาพ', style=discord.ButtonStyle.secondary, emoji='📸')
     async def add_image_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message(
@@ -1234,10 +1277,16 @@ class SalesConfirmView(discord.ui.View):
                 except Exception as e:
                     print(f"❌ ไม่สามารถส่งล็อกไปยังช่องประวัติบิลได้: {e}")
                 
+                # ลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย
+                await remove_seller_permission(interaction, interaction.user)
+                
                 # ปิดการใช้งานปุ่ม
                 for item in self.children:
                     item.disabled = True
                 await interaction.edit_original_response(view=self)
+                
+                # ลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย
+                await remove_seller_permission(interaction, interaction.user)
                 
             else:
                 embed = discord.Embed(
@@ -1340,106 +1389,105 @@ class SalesChannelView(discord.ui.View):
     async def list_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         
+        # ใช้คำสั่ง !products เพื่อแสดงสินค้าเป็น card
+        embed = discord.Embed(
+            title="🏪 รายการสินค้าทั้งหมด",
+            description="กำลังแสดงสินค้าทั้งหมดในรูปแบบ Product Card",
+            color=0x4ecdc4
+        )
+        embed.add_field(
+            name="💡 คำแนะนำ",
+            value="• สินค้าจะถูกแสดงเป็น card แยกต่างหาก\n• แต่ละ card จะมีปุ่มสำหรับการซื้อ\n• คุณสามารถเลือกซื้อทันทีหรือเพิ่มเข้ารถเข็น",
+            inline=False
+        )
+        await interaction.followup.send(embed=embed)
+        
+        # เรียกใช้ฟังก์ชัน products
         products = self.stock_manager.get_all_stock()
         
         if not products:
-            embed = discord.Embed(
-                title="📦 รายการสินค้า",
-                description="ไม่มีสินค้าในระบบ",
+            no_products_embed = discord.Embed(
+                title="📦 ไม่มีสินค้าในระบบ",
+                description="ยังไม่มีสินค้าในระบบ กรุณาเพิ่มสินค้าก่อน",
                 color=0xff6b6b
             )
-            await interaction.followup.send(embed=embed, view=AdvancedStockView(self.stock_manager))
-        else:
-            # แสดงสินค้าเป็น card แยกต่างหาก
-            await self.show_product_cards(interaction, products)
-    
-    async def show_product_cards(self, interaction, products):
-        """แสดงสินค้าเป็น card แยกต่างหาก"""
-        try:
-            # สร้าง embed หลักสำหรับรายการสินค้า
-            main_embed = discord.Embed(
-                title="🏪 รายการสินค้าทั้งหมด",
-                description=f"พบสินค้าทั้งหมด {len(products)} รายการ",
-                color=0x4ecdc4
+            await interaction.followup.send(embed=no_products_embed)
+            return
+        
+        # แสดงสินค้าแต่ละรายการเป็น card พร้อมปุ่ม
+        from ui.views.product_card_view import ProductCardView
+        
+        for product in products:
+            quantity = int(product.get('จำนวน', 0))
+            status_emoji = "⚠️" if quantity < 5 else "✅"
+            price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
+            
+            embed = discord.Embed(
+                title=f"{status_emoji} {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+                color=0xe74c3c if quantity < 5 else 0x2ecc71
             )
             
-            # await interaction.followup.send(embed=main_embed, view=AdvancedStockView(self.stock_manager))
-            
-            # แสดงสินค้าแต่ละรายการเป็น card
-            for product in products[:10]:  # จำกัดที่ 10 รายการเพื่อป้องกัน spam
-                quantity = int(product.get('จำนวน', 0))
-                status_emoji = "⚠️" if quantity < 5 else "✅"
-                price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
-                description = product.get('คำอธิบาย', '')
-                image_url = product.get('รูปภาพURL', '')
-                
-                # สร้าง embed สำหรับแต่ละสินค้า
-                card_embed = discord.Embed(
-                    title=f"{product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
-                    color=0x2ecc71 if quantity >= 5 else 0xe74c3c
-                )
-                
-                # เพิ่มข้อมูลในรูปแบบ card
-                card_embed.add_field(
-                    name="💰 Value",
-                    value=f"{price:,.0f}" if price > 0 else "ไม่ระบุราคา",
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="📋 Copy command",
-                    value=f"`!buy {product.get('ชื่อสินค้า', '')}`",
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="📞 Command Channel",
-                    value=f"#{interaction.channel.name}",
-                    inline=True
-                )
-                
-                if description:
-                    card_embed.add_field(
-                        name="📝 Description",
-                        value=description,
-                        inline=False
-                    )
-                
-                # เพิ่มข้อมูลสต็อก
-                card_embed.add_field(
-                    name="📦 สต็อก",
-                    value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="📅 อัปเดตล่าสุด",
-                    value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
-                    inline=True
-                )
-                
-                card_embed.add_field(
-                    name="🔄 สถานะ",
-                    value="✅ พร้อมใช้งาน" if quantity >= 5 else "⚠️ ใกล้หมด",
-                    inline=True
-                )
-                
-                # เพิ่มรูปภาพถ้ามี
-                if image_url:
-                    card_embed.set_image(url=image_url)
-                
-                # สร้าง view สำหรับปุ่มในแต่ละ card
-                card_view = ProductCardView(self.stock_manager, product.get('ชื่อสินค้า', ''))
-                
-                await interaction.followup.send(embed=card_embed, view=card_view)
-                
-        except Exception as e:
-            error_embed = discord.Embed(
-                title="❌ เกิดข้อผิดพลาด",
-                description=f"ไม่สามารถแสดงรายการสินค้าได้: {str(e)}",
-                color=0xe74c3c
+            # ข้อมูลพื้นฐาน
+            embed.add_field(
+                name="📦 จำนวน",
+                value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
+                inline=True
             )
-            await interaction.followup.send(embed=error_embed)
+            
+            if price > 0:
+                embed.add_field(
+                    name="💰 ราคา",
+                    value=f"{price:,.0f} บาท",
+                    inline=True
+                )
+            
+            embed.add_field(
+                name="🆔 ID",
+                value=f"#{product.get('ID', 'N/A')}",
+                inline=True
+            )
+            
+            # คำอธิบาย
+            if product.get('คำอธิบาย'):
+                embed.add_field(
+                    name="📝 คำอธิบาย",
+                    value=product.get('คำอธิบาย'),
+                    inline=False
+                )
+            
+            # วันที่อัปเดต
+            embed.add_field(
+                name="🕒 อัปเดตล่าสุด",
+                value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
+                inline=False
+            )
+            
+            # รูปภาพ
+            if product.get('รูปภาพURL'):
+                embed.set_image(url=product.get('รูปภาพURL'))
+            
+            # แจ้งเตือนสต็อกต่ำ
+            if quantity < 5:
+                embed.add_field(
+                    name="⚠️ แจ้งเตือน",
+                    value="สินค้าใกล้หมดแล้ว",
+                    inline=False
+                )
+            
+            # สถานะสินค้า
+            if quantity == 0:
+                embed.add_field(
+                    name="🚫 สถานะ",
+                    value="สินค้าหมด",
+                    inline=False
+                )
+                embed.color = 0x95a5a6
+            
+            # ส่งเป็น card พร้อมปุ่ม (ใช้ ProductCardView ใหม่)
+            await interaction.followup.send(embed=embed, view=ProductCardView(product, self.stock_manager))
+            
+            # รอเล็กน้อยเพื่อไม่ให้ spam
+            await asyncio.sleep(0.5)
     
     @discord.ui.button(label='🛒 สร้างการขาย', style=discord.ButtonStyle.success, emoji='🛒', row=1)
     async def create_sales_button(self, interaction: discord.Interaction, button: discord.ui.Button):

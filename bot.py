@@ -1,12 +1,55 @@
 import discord
 from discord.ext import commands
+from discord.ui import View, Button, Modal, TextInput, Select
+import asyncio
+import json
+import os
+from datetime import datetime
+from dotenv import load_dotenv
 import gspread
 from google.oauth2.service_account import Credentials
-import os
-from dotenv import load_dotenv
-import datetime
-import asyncio
-from ui_components import AdvancedStockView, StockModal, ProductSelectView, ConfirmationView, ImageUploadView, SalesModal, SalesChannelView
+from ui.views.product_card_view import ProductCardView
+from ui_components import *
+
+# ฟังก์ชันช่วยสำหรับการลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย
+async def remove_seller_permission(ctx, seller_user):
+    """ลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย"""
+    try:
+        # ตรวจสอบว่าเป็นห้องที่สามารถจัดการสิทธิ์ได้
+        if isinstance(ctx.channel, discord.TextChannel):
+            # ลบสิทธิ์ของผู้ขายออกจากห้องนี้
+            overwrite = discord.PermissionOverwrite()
+            overwrite.view_channel = False
+            overwrite.send_messages = False
+            overwrite.read_message_history = False
+            
+            await ctx.channel.set_permissions(seller_user, overwrite=overwrite)
+            
+            # ส่งข้อความแจ้งเตือนในช่อง (ถ้าจำเป็น)
+            try:
+                embed = discord.Embed(
+                    title="🔒 ห้องถูกปิดการเข้าถึง",
+                    description=f"สิทธิ์การเข้าถึงของ {seller_user.mention} ถูกลบออกจากห้องนี้หลังจากการขายเสร็จสิ้น",
+                    color=0xff6b6b
+                )
+                embed.add_field(
+                    name="📝 หมายเหตุ",
+                    value="นี่เป็นการดำเนินการอัตโนมัติหลังจากแสดงใบเสร็จการขาย",
+                    inline=False
+                )
+                await ctx.send(embed=embed)
+            except:
+                pass  # ถ้าไม่สามารถส่งข้อความได้ก็ข้าม
+            
+            print(f"✅ ลบสิทธิ์ผู้ขาย {seller_user.name} ({seller_user.id}) ออกจากห้อง {ctx.channel.name} ({ctx.channel.id}) เรียบร้อยแล้ว")
+            
+        else:
+            print(f"❌ ไม่สามารถลบสิทธิ์ได้: ห้องนี้ไม่ใช่ TextChannel")
+            
+    except discord.Forbidden:
+        print(f"❌ ไม่มีสิทธิ์ในการจัดการสิทธิ์ของห้อง {ctx.channel.name}")
+    except Exception as e:
+        print(f"❌ เกิดข้อผิดพลาดในการลบสิทธิ์: {e}")
 
 # โหลด environment variables
 load_dotenv()
@@ -220,7 +263,7 @@ class StockManager:
                         # อัปเดตข้อมูลในชีต
                         row_number = i + 2  # +2 เพราะเริ่มจากแถวที่ 2 (แถว 1 เป็นหัวตาราง)
                         stock_sheet.update(f'C{row_number}', new_quantity)
-                        stock_sheet.update(f'H{row_number}', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        stock_sheet.update(f'H{row_number}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                         
                         # อัปเดตข้อมูลอื่นๆ ถ้ามีการใส่ข้อมูลใหม่
                         if price > 0:
@@ -253,7 +296,7 @@ class StockManager:
                             price,
                             description,
                             image_url,
-                            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         ]]
                     )
                     print(f"✅ เพิ่มสินค้าใหม่ {product_name} สำเร็จ")
@@ -285,7 +328,7 @@ class StockManager:
                     new_quantity = max(0, current_quantity - int(quantity))
                     
                     stock_sheet.update(f'C{i+2}', new_quantity)
-                    stock_sheet.update(f'H{i+2}', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    stock_sheet.update(f'H{i+2}', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                     
                     # บันทึกประวัติ
                     self.add_history(user, 'ลดสินค้า', product_name, quantity, f'คงเหลือ: {new_quantity}')
@@ -365,7 +408,7 @@ class StockManager:
             history_sheet.update(
                 range_name=f'A{next_row}:F{next_row}',
                 values=[[
-                    datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     str(user),
                     action,
                     product_name,
@@ -402,7 +445,7 @@ class StockManager:
             records = bills_sheet.get_all_records()
             
             # สร้างเลขที่ใบเสร็จในรูปแบบ YYYYMMDD-XXX
-            today = datetime.datetime.now().strftime('%Y%m%d')
+            today = datetime.now().strftime('%Y%m%d')
             today_bills = [record for record in records if record['เลขที่ใบเสร็จ'].startswith(today)]
             
             next_number = len(today_bills) + 1
@@ -412,7 +455,7 @@ class StockManager:
             
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการสร้างเลขที่ใบเสร็จ: {e}")
-            return f"{datetime.datetime.now().strftime('%Y%m%d')}-001"
+            return f"{datetime.now().strftime('%Y%m%d')}-001"
     
     def create_bill(self, seller, items, notes=""):
         """สร้างใบเสร็จ"""
@@ -421,7 +464,7 @@ class StockManager:
             bill_number = self.generate_bill_number()
             
             total_amount = 0
-            current_date = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
             # เพิ่มรายการสินค้าในใบเสร็จ
             for item in items:
@@ -796,6 +839,175 @@ async def show_history(ctx):
     
     await ctx.send(embed=embed, view=AdvancedStockView(stock_manager))
 
+@bot.command(name='products')
+async def show_products(ctx):
+    """แสดงสินค้าทั้งหมดเป็น card"""
+    products = stock_manager.get_all_stock()
+    
+    if not products:
+        embed = discord.Embed(
+            title="📦 รายการสินค้า",
+            description="ไม่มีสินค้าในระบบ",
+            color=0xff6b6b
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    # ส่งสินค้าแต่ละรายการเป็น card
+    for product in products:
+        quantity = int(product.get('จำนวน', 0))
+        status_emoji = "⚠️" if quantity < LOW_STOCK_THRESHOLD else "✅"
+        price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
+        
+        embed = discord.Embed(
+            title=f"{status_emoji} {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+            color=0xe74c3c if quantity < LOW_STOCK_THRESHOLD else 0x2ecc71
+        )
+        
+        # ข้อมูลพื้นฐาน
+        embed.add_field(
+            name="📦 จำนวน",
+            value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
+            inline=True
+        )
+        
+        if price > 0:
+            embed.add_field(
+                name="💰 ราคา",
+                value=f"{price:,.0f} บาท",
+                inline=True
+            )
+        
+        embed.add_field(
+            name="🆔 ID",
+            value=f"#{product.get('ID', 'N/A')}",
+            inline=True
+        )
+        
+        # คำอธิบาย
+        if product.get('คำอธิบาย'):
+            embed.add_field(
+                name="📝 คำอธิบาย",
+                value=product.get('คำอธิบาย'),
+                inline=False
+            )
+        
+        # วันที่อัปเดต
+        embed.add_field(
+            name="🕒 อัปเดตล่าสุด",
+            value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
+            inline=False
+        )
+        
+        # รูปภาพ
+        if product.get('รูปภาพURL'):
+            embed.set_image(url=product.get('รูปภาพURL'))
+        
+        # แจ้งเตือนสต็อกต่ำ
+        if quantity < LOW_STOCK_THRESHOLD:
+            embed.add_field(
+                name="⚠️ แจ้งเตือน",
+                value="สินค้าใกล้หมดแล้ว",
+                inline=False
+            )
+        
+        # สถานะสินค้า
+        if quantity == 0:
+            embed.add_field(
+                name="🚫 สถานะ",
+                value="สินค้าหมด",
+                inline=False
+            )
+            embed.color = 0x95a5a6
+        
+        # ส่งเป็น card พร้อมปุ่ม
+        await ctx.send(embed=embed, view=ProductCardView(product, stock_manager))
+        
+        # รอเล็กน้อยเพื่อไม่ให้ spam
+        await asyncio.sleep(0.5)
+
+@bot.command(name='product')
+async def show_product(ctx, *, product_name: str):
+    """แสดงสินค้าแต่ละรายการเป็น card"""
+    product = stock_manager.check_stock(product_name)
+    
+    if not product:
+        embed = discord.Embed(
+            title="❌ ไม่พบสินค้า",
+            description=f"ไม่พบสินค้า **{product_name}** ในระบบ",
+            color=0xe74c3c
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    quantity = int(product.get('จำนวน', 0))
+    status_emoji = "⚠️" if quantity < LOW_STOCK_THRESHOLD else "✅"
+    price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
+    
+    embed = discord.Embed(
+        title=f"{status_emoji} {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+        color=0xe74c3c if quantity < LOW_STOCK_THRESHOLD else 0x2ecc71
+    )
+    
+    # ข้อมูลพื้นฐาน
+    embed.add_field(
+        name="📦 จำนวน",
+        value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}",
+        inline=True
+    )
+    
+    if price > 0:
+        embed.add_field(
+            name="💰 ราคา",
+            value=f"{price:,.0f} บาท",
+            inline=True
+        )
+    
+    embed.add_field(
+        name="🆔 ID",
+        value=f"#{product.get('ID', 'N/A')}",
+        inline=True
+    )
+    
+    # คำอธิบาย
+    if product.get('คำอธิบาย'):
+        embed.add_field(
+            name="📝 คำอธิบาย",
+            value=product.get('คำอธิบาย'),
+            inline=False
+        )
+    
+    # วันที่อัปเดต
+    embed.add_field(
+        name="🕒 อัปเดตล่าสุด",
+        value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'),
+        inline=False
+    )
+    
+    # รูปภาพ
+    if product.get('รูปภาพURL'):
+        embed.set_image(url=product.get('รูปภาพURL'))
+    
+    # แจ้งเตือนสต็อกต่ำ
+    if quantity < LOW_STOCK_THRESHOLD:
+        embed.add_field(
+            name="⚠️ แจ้งเตือน",
+            value="สินค้าใกล้หมดแล้ว",
+            inline=False
+        )
+    
+    # สถานะสินค้า
+    if quantity == 0:
+        embed.add_field(
+            name="🚫 สถานะ",
+            value="สินค้าหมด",
+            inline=False
+        )
+        embed.color = 0x95a5a6
+    
+    # ส่งเป็น card พร้อมปุ่ม
+    await ctx.send(embed=embed, view=ProductCardView(product, stock_manager))
+
 @bot.command(name='stock')
 async def stock_menu(ctx):
     """แสดงเมนูหลักของระบบสต๊อก"""
@@ -814,6 +1026,19 @@ async def stock_menu(ctx):
         `!list` - รายการสินค้าทั้งหมด
         `!history` - ประวัติการทำรายการ
         `!upload_help` - วิธีอัปโหลดรูปภาพ
+        """,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🛒 คำสั่งการขายใหม่",
+        value="""
+        `!products` - แสดงสินค้าทั้งหมดเป็น card
+        `!product [ชื่อสินค้า]` - แสดงสินค้าเฉพาะเป็น card
+        `!add_to_cart [ชื่อสินค้า] [จำนวน]` - เพิ่มเข้ารถเข็น
+        `!cart` - ดูรถเข็น
+        `!checkout` - ชำระเงิน
+        `!clear_cart` - เคลียร์รถเข็น
         """,
         inline=False
     )
@@ -873,12 +1098,44 @@ async def help_command(ctx):
     )
     
     embed.add_field(
-        name="💡 ตัวอย่างการใช้งาน",
+        name="� คำสั่งการขายใหม่",
+        value="""
+        `!products` - แสดงสินค้าทั้งหมดเป็น card
+        `!product [ชื่อสินค้า]` - แสดงสินค้าเฉพาะเป็น card
+        `!add_to_cart [ชื่อสินค้า] [จำนวน]` - เพิ่มเข้ารถเข็น
+        `!cart` - ดูรถเข็น
+        `!checkout` - ชำระเงิน
+        `!clear_cart` - เคลียร์รถเข็น
+        """,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🧾 คำสั่งใบเสร็จ",
+        value="""
+        `!bill [เลขที่ใบเสร็จ]` - ดูรายละเอียดใบเสร็จ
+        `!sales` - เมนูการขาย
+        """,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="�💡 ตัวอย่างการใช้งาน",
         value="""
         `!add ปากกา 10 ด้าม 15` - เพิ่มปากกา 10 ด้าม ราคา 15 บาท
-        `!remove ปากกา 2` - ลดปากกา 2 ด้าม
-        `!check ปากกา` - ตรวจสอบปากกา
+        `!product ปากกา` - ดูข้อมูลปากกาแบบ card
+        `!add_to_cart ปากกา 2` - เพิ่มปากกา 2 ด้าม เข้ารถเข็น
         `upload: ปากกา` + แนบรูปภาพ - อัปโหลดรูปปากกา
+        """,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🎯 คำสั่งใหม่ที่แนะนำ",
+        value="""
+        • `!products` - ดูสินค้าทั้งหมดแบบ card พร้อมปุ่มสั่งซื้อ
+        • `!product [ชื่อสินค้า]` - ดูสินค้าเฉพาะแบบ card
+        • การซื้อผ่านปุ่ม: เพิ่มเข้ารถเข็น, ซื้อทันที, ดูรถเข็น, เคลียร์รถเข็น
         """,
         inline=False
     )
@@ -1011,6 +1268,9 @@ async def view_bill(ctx, bill_number: str):
         embed.set_footer(text=f"ใบเสร็จเลขที่: {bill_number}")
         
         await ctx.send(embed=embed)
+        
+        # ลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย
+        await remove_seller_permission(ctx, ctx.author)
         
     except Exception as e:
         embed = discord.Embed(
@@ -1371,6 +1631,9 @@ async def checkout(ctx):
                     await bill_history_channel.send(embed=log_embed)
             except Exception as e:
                 print(f"❌ ไม่สามารถส่งล็อกไปยังช่องประวัติบิลได้: {e}")
+            
+            # ลบสิทธิ์ผู้ขายออกจากห้องหลังแสดงใบเสร็จการขาย
+            await remove_seller_permission(ctx, ctx.author)
             
             # เคลียร์รถเข็น
             cart.clear()
