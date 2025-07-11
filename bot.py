@@ -6,8 +6,7 @@ import os
 from dotenv import load_dotenv
 import datetime
 import asyncio
-import json
-from ui_components import AdvancedStockView, StockModal, ProductSelectView, ConfirmationView
+from ui_components import AdvancedStockView, StockModal, ProductSelectView, ConfirmationView, ImageUploadView
 
 # โหลด environment variables
 load_dotenv()
@@ -26,6 +25,9 @@ SCOPE = [
 
 # ตั้งค่าการแจ้งเตือน
 LOW_STOCK_THRESHOLD = 5
+
+# Dictionary เก็บข้อมูลผู้ใช้ที่กำลังรอการอัปโหลดรูป
+pending_image_uploads = {}
 
 class StockManager:
     def __init__(self):
@@ -62,69 +64,171 @@ class StockManager:
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheets: {e}")
     
+    async def upload_image_to_drive(self, image_url, filename):
+        """ใช้ Discord CDN สำหรับเก็บรูปภาพ"""
+        try:
+            # ตรวจสอบว่า URL เป็นรูปภาพจาก Discord หรือไม่
+            if "cdn.discordapp.com" in image_url or "media.discordapp.net" in image_url:
+                print(f"✅ ใช้ Discord CDN สำหรับรูปภาพ: {filename}")
+                return image_url
+            else:
+                print(f"⚠️ URL ไม่ใช่ Discord CDN: {image_url}")
+                return image_url
+                
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการจัดการรูปภาพ: {e}")
+            return image_url
+    
     def setup_sheets(self):
         """สร้างชีตและตั้งค่าหัวตาราง"""
         try:
             # ตรวจสอบและสร้างชีต Stock
             try:
                 stock_sheet = self.spreadsheet.worksheet('Stock')
+                print("✅ พบชีต Stock แล้ว")
+                
+                # ตรวจสอบว่าชีตมีหัวตารางหรือไม่
+                try:
+                    first_row = stock_sheet.row_values(1)
+                    if not first_row or len(first_row) < 8 or first_row[0] != 'ID':
+                        print("⚠️ หัวตารางของชีต Stock ไม่ถูกต้อง กำลังแก้ไข...")
+                        stock_sheet.update(
+                            range_name='A1:H1',
+                            values=[['ID', 'ชื่อสินค้า', 'จำนวน', 'หน่วย', 'ราคา', 'คำอธิบาย', 'รูปภาพURL', 'วันที่อัปเดตล่าสุด']]
+                        )
+                        print("✅ แก้ไขหัวตารางชีต Stock เรียบร้อย")
+                except Exception as e:
+                    print(f"⚠️ ไม่สามารถตรวจสอบหัวตารางชีต Stock ได้: {e}")
+                    
             except gspread.WorksheetNotFound:
-                stock_sheet = self.spreadsheet.add_worksheet(title='Stock', rows=1000, cols=5)
+                print("⚠️ ไม่พบชีต Stock กำลังสร้างใหม่...")
+                stock_sheet = self.spreadsheet.add_worksheet(title='Stock', rows=1000, cols=8)
                 # ตั้งค่าหัวตาราง
                 stock_sheet.update(
-                    range_name='A1:E1',
-                    values=[['ID', 'ชื่อสินค้า', 'จำนวน', 'หน่วย', 'วันที่อัปเดตล่าสุด']]
+                    range_name='A1:H1',
+                    values=[['ID', 'ชื่อสินค้า', 'จำนวน', 'หน่วย', 'ราคา', 'คำอธิบาย', 'รูปภาพURL', 'วันที่อัปเดตล่าสุด']]
                 )
+                print("✅ สร้างชีต Stock เรียบร้อย")
             
             # ตรวจสอบและสร้างชีต History
             try:
                 history_sheet = self.spreadsheet.worksheet('History')
+                print("✅ พบชีต History แล้ว")
+                
+                # ตรวจสอบว่าชีตมีหัวตารางหรือไม่
+                try:
+                    first_row = history_sheet.row_values(1)
+                    if not first_row or len(first_row) < 6 or first_row[0] != 'วันที่':
+                        print("⚠️ หัวตารางของชีต History ไม่ถูกต้อง กำลังแก้ไข...")
+                        history_sheet.update(
+                            range_name='A1:F1',
+                            values=[['วันที่', 'ชื่อผู้ใช้', 'การทำรายการ', 'ชื่อสินค้า', 'จำนวน', 'หมายเหตุ']]
+                        )
+                        print("✅ แก้ไขหัวตารางชีต History เรียบร้อย")
+                except Exception as e:
+                    print(f"⚠️ ไม่สามารถตรวจสอบหัวตารางชีต History ได้: {e}")
+                    
             except gspread.WorksheetNotFound:
+                print("⚠️ ไม่พบชีต History กำลังสร้างใหม่...")
                 history_sheet = self.spreadsheet.add_worksheet(title='History', rows=1000, cols=6)
                 # ตั้งค่าหัวตาราง
                 history_sheet.update(
                     range_name='A1:F1',
                     values=[['วันที่', 'ชื่อผู้ใช้', 'การทำรายการ', 'ชื่อสินค้า', 'จำนวน', 'หมายเหตุ']]
                 )
+                print("✅ สร้างชีต History เรียบร้อย")
                 
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการสร้างชีต: {e}")
     
-    def add_stock(self, product_name, quantity, unit, user):
+    def add_stock(self, product_name, quantity, unit, user, price=0, description="", image_url=""):
         """เพิ่มสินค้าเข้าสต๊อก"""
         try:
             stock_sheet = self.spreadsheet.worksheet('Stock')
             
+            # ตรวจสอบว่าชีตมีข้อมูลหรือไม่
+            try:
+                existing_products = stock_sheet.get_all_records()
+            except Exception as e:
+                print(f"⚠️ ไม่สามารถอ่านข้อมูลจากชีตได้: {e}")
+                existing_products = []
+            
+            # ตรวจสอบว่าชีตมีหัวตารางหรือไม่
+            if not existing_products:
+                # ตรวจสอบว่าแถวแรกมีหัวตารางหรือไม่
+                try:
+                    first_row = stock_sheet.row_values(1)
+                    if not first_row or first_row[0] != 'ID':
+                        # ตั้งค่าหัวตารางใหม่
+                        stock_sheet.clear()
+                        stock_sheet.update(
+                            range_name='A1:H1',
+                            values=[['ID', 'ชื่อสินค้า', 'จำนวน', 'หน่วย', 'ราคา', 'คำอธิบาย', 'รูปภาพURL', 'วันที่อัปเดตล่าสุด']]
+                        )
+                        print("✅ ตั้งค่าหัวตารางใหม่สำเร็จ")
+                except Exception as e:
+                    print(f"⚠️ ไม่สามารถตั้งค่าหัวตารางได้: {e}")
+                    return False
+            
             # ค้นหาสินค้าที่มีอยู่
-            existing_products = stock_sheet.get_all_records()
             product_found = False
             
             for i, product in enumerate(existing_products):
-                if product['ชื่อสินค้า'].lower() == product_name.lower():
-                    # อัปเดตจำนวนสินค้าที่มีอยู่
-                    new_quantity = int(product['จำนวน']) + int(quantity)
-                    stock_sheet.update(f'C{i+2}', new_quantity)
-                    stock_sheet.update(f'E{i+2}', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                    product_found = True
-                    break
+                try:
+                    if product.get('ชื่อสินค้า', '').lower() == product_name.lower():
+                        # อัปเดตจำนวนสินค้าที่มีอยู่
+                        current_quantity = int(product.get('จำนวน', 0))
+                        new_quantity = current_quantity + int(quantity)
+                        
+                        # อัปเดตข้อมูลในชีต
+                        row_number = i + 2  # +2 เพราะเริ่มจากแถวที่ 2 (แถว 1 เป็นหัวตาราง)
+                        stock_sheet.update(f'C{row_number}', new_quantity)
+                        stock_sheet.update(f'H{row_number}', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                        
+                        # อัปเดตข้อมูลอื่นๆ ถ้ามีการใส่ข้อมูลใหม่
+                        if price > 0:
+                            stock_sheet.update(f'E{row_number}', price)
+                        if description:
+                            stock_sheet.update(f'F{row_number}', description)
+                        if image_url:
+                            stock_sheet.update(f'G{row_number}', image_url)
+                        
+                        product_found = True
+                        print(f"✅ อัปเดตสินค้า {product_name} สำเร็จ")
+                        break
+                except Exception as e:
+                    print(f"⚠️ เกิดข้อผิดพลาดในการอัปเดตสินค้า: {e}")
+                    continue
             
             if not product_found:
-                # เพิ่มสินค้าใหม่
-                next_row = len(existing_products) + 2
-                new_id = len(existing_products) + 1
-                stock_sheet.update(
-                    range_name=f'A{next_row}:E{next_row}',
-                    values=[[
-                        new_id,
-                        product_name,
-                        quantity,
-                        unit,
-                        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    ]]
-                )
+                try:
+                    # เพิ่มสินค้าใหม่
+                    next_row = len(existing_products) + 2
+                    new_id = len(existing_products) + 1
+                    
+                    stock_sheet.update(
+                        range_name=f'A{next_row}:H{next_row}',
+                        values=[[
+                            new_id,
+                            product_name,
+                            quantity,
+                            unit,
+                            price,
+                            description,
+                            image_url,
+                            datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                        ]]
+                    )
+                    print(f"✅ เพิ่มสินค้าใหม่ {product_name} สำเร็จ")
+                except Exception as e:
+                    print(f"⚠️ เกิดข้อผิดพลาดในการเพิ่มสินค้าใหม่: {e}")
+                    return False
             
             # บันทึกประวัติ
-            self.add_history(user, 'เพิ่มสินค้า', product_name, quantity, f'หน่วย: {unit}')
+            try:
+                self.add_history(user, 'เพิ่มสินค้า', product_name, quantity, f'หน่วย: {unit}, ราคา: {price}')
+            except Exception as e:
+                print(f"⚠️ เกิดข้อผิดพลาดในการบันทึกประวัติ: {e}")
             
             return True
             
@@ -144,7 +248,7 @@ class StockManager:
                     new_quantity = max(0, current_quantity - int(quantity))
                     
                     stock_sheet.update(f'C{i+2}', new_quantity)
-                    stock_sheet.update(f'E{i+2}', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+                    stock_sheet.update(f'H{i+2}', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
                     
                     # บันทึกประวัติ
                     self.add_history(user, 'ลดสินค้า', product_name, quantity, f'คงเหลือ: {new_quantity}')
@@ -196,8 +300,31 @@ class StockManager:
         """เพิ่มประวัติการทำรายการ"""
         try:
             history_sheet = self.spreadsheet.worksheet('History')
-            next_row = len(history_sheet.get_all_records()) + 2
             
+            # ตรวจสอบว่าชีตมีข้อมูลหรือไม่
+            try:
+                existing_records = history_sheet.get_all_records()
+                next_row = len(existing_records) + 2
+            except Exception as e:
+                print(f"⚠️ ไม่สามารถอ่านข้อมูลจากชีต History ได้: {e}")
+                # ตรวจสอบว่าชีตมีหัวตารางหรือไม่
+                try:
+                    first_row = history_sheet.row_values(1)
+                    if not first_row or first_row[0] != 'วันที่':
+                        # ตั้งค่าหัวตารางใหม่
+                        history_sheet.clear()
+                        history_sheet.update(
+                            range_name='A1:F1',
+                            values=[['วันที่', 'ชื่อผู้ใช้', 'การทำรายการ', 'ชื่อสินค้า', 'จำนวน', 'หมายเหตุ']]
+                        )
+                        next_row = 2
+                    else:
+                        next_row = 2
+                except Exception as e2:
+                    print(f"⚠️ ไม่สามารถตั้งค่าหัวตาราง History ได้: {e2}")
+                    return
+            
+            # เพิ่มข้อมูลใหม่
             history_sheet.update(
                 range_name=f'A{next_row}:F{next_row}',
                 values=[[
@@ -209,6 +336,7 @@ class StockManager:
                     note
                 ]]
             )
+            print(f"✅ บันทึกประวัติสำเร็จ: {action} {product_name}")
             
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการเพิ่มประวัติ: {e}")
@@ -261,8 +389,8 @@ async def low_stock_checker():
                             
                             for product in low_stock_items:
                                 embed.add_field(
-                                    name=f"🔴 {product['ชื่อสินค้า']}",
-                                    value=f"จำนวน: {product['จำนวน']} {product['หน่วย']}",
+                                    name=f"🔴 {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+                                    value=f"จำนวน: {product.get('จำนวน', 0)} {product.get('หน่วย', 'ชิ้น')}",
                                     inline=True
                                 )
                             
@@ -273,14 +401,16 @@ async def low_stock_checker():
             print(f"❌ เกิดข้อผิดพลาดในการตรวจสอบสินค้าใกล้หมด: {e}")
 
 @bot.command(name='add')
-async def add_stock(ctx, product_name: str, quantity: int, unit: str):
+async def add_stock(ctx, product_name: str, quantity: int, unit: str, price: float = 0):
     """เพิ่มสินค้าเข้าสต๊อก"""
-    if stock_manager.add_stock(product_name, quantity, unit, ctx.author):
+    if stock_manager.add_stock(product_name, quantity, unit, ctx.author, price, "", ""):
         embed = discord.Embed(
             title="✅ เพิ่มสินค้าสำเร็จ",
             description=f"เพิ่ม **{product_name}** จำนวน **{quantity} {unit}** แล้ว",
             color=0x2ecc71
         )
+        if price > 0:
+            embed.add_field(name="💰 ราคา", value=f"{price:,.0f}", inline=True)
         embed.set_footer(text=f"ดำเนินการโดย {ctx.author}")
         await ctx.send(embed=embed, view=AdvancedStockView(stock_manager))
     else:
@@ -326,16 +456,25 @@ async def check_stock(ctx, product_name: str):
     product = stock_manager.check_stock(product_name)
     
     if product:
-        quantity = int(product['จำนวน'])
+        quantity = int(product.get('จำนวน', 0))
         status_emoji = "⚠️" if quantity < LOW_STOCK_THRESHOLD else "✅"
+        price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
         
         embed = discord.Embed(
-            title=f"{status_emoji} {product['ชื่อสินค้า']}",
+            title=f"{status_emoji} {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
             color=0xe74c3c if quantity < LOW_STOCK_THRESHOLD else 0x2ecc71
         )
         
-        embed.add_field(name="จำนวน", value=f"{quantity} {product['หน่วย']}", inline=True)
-        embed.add_field(name="อัปเดตล่าสุด", value=product['วันที่อัปเดตล่าสุด'], inline=True)
+        embed.add_field(name="จำนวน", value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}", inline=True)
+        if price > 0:
+            embed.add_field(name="ราคา", value=f"{price:,.0f}", inline=True)
+        embed.add_field(name="อัปเดตล่าสุด", value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'), inline=True)
+        
+        if product.get('คำอธิบาย'):
+            embed.add_field(name="คำอธิบาย", value=product.get('คำอธิบาย'), inline=False)
+        
+        if product.get('รูปภาพURL'):
+            embed.set_image(url=product.get('รูปภาพURL'))
         
         if quantity < LOW_STOCK_THRESHOLD:
             embed.add_field(
@@ -371,12 +510,18 @@ async def list_stock(ctx):
         )
         
         for product in products:
-            quantity = int(product['จำนวน'])
+            quantity = int(product.get('จำนวน', 0))
             status_emoji = "⚠️" if quantity < LOW_STOCK_THRESHOLD else "✅"
+            price = float(product.get('ราคา', 0)) if product.get('ราคา') else 0
+            
+            value_text = f"จำนวน: {quantity} {product.get('หน่วย', 'ชิ้น')}"
+            if price > 0:
+                value_text += f"\nราคา: {price:,.0f}"
+            value_text += f"\nอัปเดต: {product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ')}"
             
             embed.add_field(
-                name=f"{status_emoji} {product['ชื่อสินค้า']}",
-                value=f"จำนวน: {quantity} {product['หน่วย']}\nอัปเดต: {product['วันที่อัปเดตล่าสุด']}",
+                name=f"{status_emoji} {product.get('ชื่อสินค้า', 'ไม่ระบุชื่อ')}",
+                value=value_text,
                 inline=True
             )
     
@@ -401,8 +546,8 @@ async def show_history(ctx):
         
         for record in reversed(history):
             embed.add_field(
-                name=f"{record['การทำรายการ']} - {record['ชื่อสินค้า']}",
-                value=f"ผู้ใช้: {record['ชื่อผู้ใช้']}\nจำนวน: {record['จำนวน']}\nวันที่: {record['วันที่']}\nหมายเหตุ: {record['หมายเหตุ']}",
+                name=f"{record.get('การทำรายการ', 'ไม่ระบุ')} - {record.get('ชื่อสินค้า', 'ไม่ระบุ')}",
+                value=f"ผู้ใช้: {record.get('ชื่อผู้ใช้', 'ไม่ระบุ')}\nจำนวน: {record.get('จำนวน', 0)}\nวันที่: {record.get('วันที่', 'ไม่ระบุ')}\nหมายเหตุ: {record.get('หมายเหตุ', 'ไม่มี')}",
                 inline=False
             )
     
@@ -420,11 +565,12 @@ async def stock_menu(ctx):
     embed.add_field(
         name="📝 คำสั่งพื้นฐาน",
         value="""
-        `!add [ชื่อสินค้า] [จำนวน] [หน่วย]` - เพิ่มสินค้า
+        `!add [ชื่อสินค้า] [จำนวน] [หน่วย] [ราคา]` - เพิ่มสินค้า
         `!remove [ชื่อสินค้า] [จำนวน]` - ลดสินค้า
         `!check [ชื่อสินค้า]` - ตรวจสอบสินค้า
         `!list` - รายการสินค้าทั้งหมด
         `!history` - ประวัติการทำรายการ
+        `!upload_help` - วิธีอัปโหลดรูปภาพ
         """,
         inline=False
     )
@@ -473,11 +619,12 @@ async def help_command(ctx):
         name="🔧 คำสั่งหลัก",
         value="""
         `!stock` - แสดงเมนูหลัก
-        `!add [ชื่อสินค้า] [จำนวน] [หน่วย]` - เพิ่มสินค้า
+        `!add [ชื่อสินค้า] [จำนวน] [หน่วย] [ราคา]` - เพิ่มสินค้า
         `!remove [ชื่อสินค้า] [จำนวน]` - ลดสินค้า
         `!check [ชื่อสินค้า]` - ตรวจสอบสินค้า
         `!list` - รายการสินค้าทั้งหมด
         `!history` - ประวัติการทำรายการ
+        `!upload_help` - วิธีอัปโหลดรูปภาพ
         """,
         inline=False
     )
@@ -485,9 +632,10 @@ async def help_command(ctx):
     embed.add_field(
         name="💡 ตัวอย่างการใช้งาน",
         value="""
-        `!add ปากกา 10 ด้าม`
-        `!remove ปากกา 2`
-        `!check ปากกา`
+        `!add ปากกา 10 ด้าม 15` - เพิ่มปากกา 10 ด้าม ราคา 15 บาท
+        `!remove ปากกา 2` - ลดปากกา 2 ด้าม
+        `!check ปากกา` - ตรวจสอบปากกา
+        `upload: ปากกา` + แนบรูปภาพ - อัปโหลดรูปปากกา
         """,
         inline=False
     )
@@ -495,6 +643,239 @@ async def help_command(ctx):
     embed.set_footer(text="ระบบจะแจ้งเตือนอัตโนมัติเมื่อสินค้าเหลือน้อยกว่า 5 ชิ้น")
     
     await ctx.send(embed=embed, view=AdvancedStockView(stock_manager))
+
+@bot.command(name='upload_help')
+async def upload_help(ctx):
+    """แสดงวิธีอัปโหลดรูปภาพสินค้า"""
+    embed = discord.Embed(
+        title="📸 วิธีอัปโหลดรูปภาพสินค้า",
+        description="คำแนะนำในการอัปโหลดรูปภาพสำหรับสินค้า (ใช้ Discord CDN)",
+        color=0x3498db
+    )
+    
+    embed.add_field(
+        name="🔧 วิธีที่ 1: อัปโหลดพร้อมสร้างสินค้า",
+        value="""
+        1. ใช้ปุ่ม "สร้างสินค้าใหม่" จากเมนูหลัก
+        2. กรอกข้อมูลสินค้า (ชื่อ, จำนวน, หน่วย, ราคา, คำอธิบาย)
+        3. ส่งรูปภาพในข้อความถัดไป
+        """,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="🔧 วิธีที่ 2: อัปโหลดให้สินค้าที่มีอยู่",
+        value="""
+        1. พิมพ์ `upload: ชื่อสินค้า` 
+        2. แนบรูปภาพในข้อความเดียวกัน
+        3. ส่งข้อความ
+        """,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="💡 ตัวอย่าง",
+        value="`upload: ปากกา` (พร้อมแนบรูปภาพ)",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📁 รองรับไฟล์",
+        value="JPG, PNG, GIF, WEBP",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🔗 Discord CDN",
+        value="รูปภาพจะถูกเก็บไว้ใน Discord CDN โดยอัตโนมัติ",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="✨ ข้อดี",
+        value="• ไม่จำกัดเนื้อที่\n• ความเร็วสูง\n• เสถียรภาพดี",
+        inline=False
+    )
+    
+    await ctx.send(embed=embed)
+
+# เพิ่มฟังก์ชันรองรับการอัปโหลดรูปจาก Discord message
+@bot.event
+async def on_message(message):
+    # ตรวจสอบว่าไม่ใช่ bot
+    if message.author.bot:
+        return
+    
+    # ตรวจสอบว่ามีไฟล์แนบและเป็นรูปภาพ
+    if message.attachments:
+        for attachment in message.attachments:
+            if attachment.content_type and attachment.content_type.startswith('image/'):
+                # ตรวจสอบว่าข้อความมีการแก้ไข "upload:" หรือไม่
+                if message.content.startswith('upload:'):
+                    try:
+                        # ดึงชื่อสินค้าจากข้อความ
+                        product_name = message.content.replace('upload:', '').strip()
+                        
+                        if product_name:
+                            # ใช้ Discord CDN สำหรับรูปภาพ
+                            filename = f"{product_name}_{attachment.filename}"
+                            image_url = await stock_manager.upload_image_to_drive(attachment.url, filename)
+                            
+                            if image_url:
+                                # อัปเดตข้อมูลสินค้าด้วย URL รูปภาพ
+                                products = stock_manager.get_all_stock()
+                                for product in products:
+                                    if product['ชื่อสินค้า'].lower() == product_name.lower():
+                                        # อัปเดต URL รูปภาพในชีต
+                                        stock_sheet = stock_manager.spreadsheet.worksheet('Stock')
+                                        existing_products = stock_sheet.get_all_records()
+                                        
+                                        for i, p in enumerate(existing_products):
+                                            if p['ชื่อสินค้า'].lower() == product_name.lower():
+                                                stock_sheet.update(f'G{i+2}', image_url)
+                                                break
+                                        
+                                        embed = discord.Embed(
+                                            title="✅ อัปโหลดรูปภาพสำเร็จ",
+                                            description=f"อัปโหลดรูปภาพสำหรับสินค้า **{product_name}** เรียบร้อยแล้ว",
+                                            color=0x2ecc71
+                                        )
+                                        embed.add_field(
+                                            name="ℹ️ ระบบจัดเก็บ",
+                                            value="ใช้ Discord CDN สำหรับความเร็วและเสถียรภาพ",
+                                            inline=False
+                                        )
+                                        embed.set_image(url=image_url)
+                                        await message.reply(embed=embed)
+                                        break
+                                else:
+                                    embed = discord.Embed(
+                                        title="❌ ไม่พบสินค้า",
+                                        description=f"ไม่พบสินค้า **{product_name}** ในระบบ",
+                                        color=0xe74c3c
+                                    )
+                                    await message.reply(embed=embed)
+                            else:
+                                embed = discord.Embed(
+                                    title="❌ อัปโหลดรูปภาพไม่สำเร็จ",
+                                    description="เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ",
+                                    color=0xe74c3c
+                                )
+                                await message.reply(embed=embed)
+                        else:
+                            embed = discord.Embed(
+                                title="💡 วิธีอัปโหลดรูปภาพ",
+                                description="กรุณาใส่ชื่อสินค้าหลังจาก `upload:` เช่น `upload: ชื่อสินค้า`",
+                                color=0x3498db
+                            )
+                            await message.reply(embed=embed)
+                    except Exception as e:
+                        embed = discord.Embed(
+                            title="❌ เกิดข้อผิดพลาด",
+                            description=f"เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ: {str(e)}",
+                            color=0xe74c3c
+                        )
+                        await message.reply(embed=embed)
+                
+                # ตรวจสอบว่าผู้ใช้อยู่ในสถานะรอการอัปโหลดรูปหรือไม่
+                elif str(message.author.id) in pending_image_uploads:
+                    try:
+                        product_data = pending_image_uploads[str(message.author.id)]
+                        product_name = product_data['product_name']
+                        
+                        # ใช้ Discord CDN สำหรับรูปภาพ
+                        filename = f"{product_name}_{attachment.filename}"
+                        image_url = await stock_manager.upload_image_to_drive(attachment.url, filename)
+                        
+                        if image_url:
+                            # สร้างสินค้าใหม่พร้อมรูปภาพ
+                            success = stock_manager.add_stock(
+                                product_name,
+                                product_data['quantity'],
+                                product_data['unit'],
+                                message.author,
+                                product_data['price'],
+                                product_data['description'],
+                                image_url
+                            )
+                            
+                            if success:
+                                embed = discord.Embed(
+                                    title="✅ สร้างสินค้าพร้อมรูปภาพสำเร็จ",
+                                    description=f"สร้างสินค้า **{product_name}** พร้อมรูปภาพเรียบร้อยแล้ว",
+                                    color=0x2ecc71
+                                )
+                                embed.add_field(
+                                    name="ℹ️ ระบบจัดเก็บ",
+                                    value="ใช้ Discord CDN สำหรับความเร็วและเสถียรภาพ",
+                                    inline=False
+                                )
+                                embed.add_field(name="จำนวน", value=f"{product_data['quantity']} {product_data['unit']}", inline=True)
+                                if product_data['price'] > 0:
+                                    embed.add_field(name="ราคา", value=f"{product_data['price']:,.0f}", inline=True)
+                                if product_data['description']:
+                                    embed.add_field(name="คำอธิบาย", value=product_data['description'], inline=False)
+                                embed.set_image(url=image_url)
+                                embed.set_footer(text=f"ดำเนินการโดย {message.author}")
+                                await message.reply(embed=embed)
+                            else:
+                                embed = discord.Embed(
+                                    title="❌ เกิดข้อผิดพลาด",
+                                    description="ไม่สามารถสร้างสินค้าได้",
+                                    color=0xe74c3c
+                                )
+                                await message.reply(embed=embed)
+                        else:
+                            embed = discord.Embed(
+                                title="❌ อัปโหลดรูปภาพไม่สำเร็จ",
+                                description="เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ",
+                                color=0xe74c3c
+                            )
+                            await message.reply(embed=embed)
+                        
+                        # ลบข้อมูลออกจาก pending_image_uploads
+                        del pending_image_uploads[str(message.author.id)]
+                        
+                    except Exception as e:
+                        embed = discord.Embed(
+                            title="❌ เกิดข้อผิดพลาด",
+                            description=f"เกิดข้อผิดพลาดในการอัปโหลดรูปภาพ: {str(e)}",
+                            color=0xe74c3c
+                        )
+                        await message.reply(embed=embed)
+                        
+                        # ลบข้อมูลออกจาก pending_image_uploads แม้จะเกิดข้อผิดพลาด
+                        if str(message.author.id) in pending_image_uploads:
+                            del pending_image_uploads[str(message.author.id)]
+                
+                # ถ้าไม่ใช่ทั้งสองกรณีข้างต้น แสดงข้อความแนะนำ
+                else:
+                    # ตรวจสอบว่าข้อความไม่ใช่คำสั่ง
+                    if not message.content.startswith('!'):
+                        embed = discord.Embed(
+                            title="📸 พบรูปภาพ",
+                            description="หากต้องการอัปโหลดรูปภาพสำหรับสินค้า กรุณาใช้วิธีใดวิธีหนึ่งต่อไปนี้:",
+                            color=0x3498db
+                        )
+                        embed.add_field(
+                            name="🔧 วิธีที่ 1",
+                            value="พิมพ์ `upload: ชื่อสินค้า` พร้อมแนบรูปภาพ",
+                            inline=False
+                        )
+                        embed.add_field(
+                            name="🆕 วิธีที่ 2",
+                            value="ใช้ปุ่ม 'สร้างสินค้าใหม่' จากเมนูหลัก แล้วส่งรูปภาพตามคำแนะนำ",
+                            inline=False
+                        )
+                        embed.add_field(
+                            name="💡 คำแนะนำ",
+                            value="พิมพ์ `!upload_help` เพื่อดูคำแนะนำเพิ่มเติม",
+                            inline=False
+                        )
+                        await message.reply(embed=embed)
+    
+    # ดำเนินการคำสั่งปกติ
+    await bot.process_commands(message)
 
 # รัน bot
 if __name__ == "__main__":
