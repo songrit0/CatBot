@@ -7,6 +7,236 @@ import os
 import asyncio
 from ui.views.product_card_view import ProductCardView
 
+class ProductInspectionView(discord.ui.View):
+    """View สำหรับแสดงข้อมูลสินค้าพร้อมปุ่มแก้ไข"""
+    def __init__(self, stock_manager, product_data):
+        super().__init__(timeout=300)
+        self.stock_manager = stock_manager
+        self.product_data = product_data
+        
+    @discord.ui.button(label='แก้ไขข้อมูลสินค้า', style=discord.ButtonStyle.primary, emoji='✏️')
+    async def edit_product(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = EditProductModal(self.stock_manager, self.product_data)
+        await interaction.response.send_modal(modal)
+    
+    @discord.ui.button(label='เพิ่มรูปภาพ', style=discord.ButtonStyle.secondary, emoji='📸')
+    async def add_image(self, interaction: discord.Interaction, button: discord.ui.Button):
+        image_view = ImageUploadView(self.stock_manager, self.product_data.get('ชื่อสินค้า', ''))
+        
+        embed = discord.Embed(
+            title="📸 เพิ่มรูปภาพสินค้า",
+            description=f"เลือกวิธีเพิ่มรูปภาพสำหรับ **{self.product_data.get('ชื่อสินค้า', '')}**",
+            color=0x3498db
+        )
+        embed.add_field(
+            name="🔧 วิธีที่ 1: ใช้รูปภาพล่าสุด",
+            value="อัพรูปภาพล่าสุดใน channel นี้ แล้วคลิกปุ่ม 'ใช้รูปภาพล่าสุด'",
+            inline=False
+        )
+        embed.add_field(
+            name="🔧 วิธีที่ 2: ส่งรูปภาพใหม่",
+            value=f"ส่งรูปภาพใหม่ในช่องนี้ พร้อมข้อความ `upload: {self.product_data.get('ชื่อสินค้า', '')}`",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, view=image_view, ephemeral=True)
+    
+    @discord.ui.button(label='ลบสินค้า', style=discord.ButtonStyle.danger, emoji='🗑️')
+    async def delete_product(self, interaction: discord.Interaction, button: discord.ui.Button):
+        confirm_view = DeleteConfirmationView(self.stock_manager, self.product_data.get('ชื่อสินค้า', ''))
+        
+        embed = discord.Embed(
+            title="⚠️ ยืนยันการลบสินค้า",
+            description=f"คุณต้องการลบสินค้า **{self.product_data.get('ชื่อสินค้า', '')}** หรือไม่?",
+            color=0xe74c3c
+        )
+        embed.add_field(
+            name="🚨 คำเตือน",
+            value="การลบสินค้าจะไม่สามารถกู้คืนได้",
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, view=confirm_view, ephemeral=True)
+    
+    @discord.ui.button(label='ย้อนกลับ', style=discord.ButtonStyle.secondary, emoji='⬅️')
+    async def back_to_stock(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "กลับไปที่เมนูหลัก:",
+            view=AdvancedStockView(self.stock_manager),
+            ephemeral=True
+        )
+
+class EditProductModal(discord.ui.Modal):
+    """Modal สำหรับแก้ไขข้อมูลสินค้า"""
+    def __init__(self, stock_manager, product_data):
+        super().__init__(title=f"✏️ แก้ไขข้อมูลสินค้า")
+        self.stock_manager = stock_manager
+        self.product_data = product_data
+        self.original_name = product_data.get('ชื่อสินค้า', '')
+        
+        # Product name input
+        self.product_name = discord.ui.TextInput(
+            label="ชื่อสินค้า",
+            placeholder="กรอกชื่อสินค้า...",
+            default=product_data.get('ชื่อสินค้า', ''),
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.product_name)
+        
+        # Quantity input
+        self.quantity = discord.ui.TextInput(
+            label="จำนวน",
+            placeholder="กรอกจำนวน...",
+            default=str(product_data.get('จำนวน', 0)),
+            required=True,
+            max_length=10
+        )
+        self.add_item(self.quantity)
+        
+        # Unit input
+        self.unit = discord.ui.TextInput(
+            label="หน่วย",
+            placeholder="กรอกหน่วย (เช่น ชิ้น, ก้อน, ถุง)...",
+            default=product_data.get('หน่วย', ''),
+            required=True,
+            max_length=50
+        )
+        self.add_item(self.unit)
+        
+        # Price input
+        self.price = discord.ui.TextInput(
+            label="ราคา",
+            placeholder="กรอกราคา...",
+            default=str(product_data.get('ราคา', 0)) if product_data.get('ราคา') else '',
+            required=False,
+            max_length=10
+        )
+        self.add_item(self.price)
+        
+        # Description input
+        self.description = discord.ui.TextInput(
+            label="คำอธิบาย",
+            placeholder="กรอกคำอธิบายสินค้า...",
+            default=product_data.get('คำอธิบาย', ''),
+            required=False,
+            max_length=500,
+            style=discord.TextStyle.paragraph
+        )
+        self.add_item(self.description)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            new_product_name = self.product_name.value.strip()
+            new_quantity = int(self.quantity.value)
+            new_unit = self.unit.value.strip()
+            new_price = float(self.price.value) if self.price.value.strip() else 0
+            new_description = self.description.value.strip()
+            
+            # อัปเดตข้อมูลในชีต
+            success = self.stock_manager.update_product(
+                self.original_name,
+                new_product_name,
+                new_quantity,
+                new_unit,
+                new_price,
+                new_description,
+                interaction.user
+            )
+            
+            if success:
+                embed = discord.Embed(
+                    title="✅ แก้ไขข้อมูลสำเร็จ",
+                    description=f"แก้ไขข้อมูลสินค้า **{new_product_name}** เรียบร้อยแล้ว",
+                    color=0x2ecc71
+                )
+                embed.add_field(name="จำนวน", value=f"{new_quantity} {new_unit}", inline=True)
+                if new_price > 0:
+                    embed.add_field(name="ราคา", value=f"{new_price:,.0f} บาท", inline=True)
+                embed.add_field(name="อัปเดตโดย", value=interaction.user.mention, inline=True)
+                if new_description:
+                    embed.add_field(name="คำอธิบาย", value=new_description, inline=False)
+                
+                # ดึงข้อมูลที่อัปเดตแล้ว
+                updated_product = self.stock_manager.check_stock(new_product_name)
+                if updated_product and updated_product.get('รูปภาพURL'):
+                    embed.set_image(url=updated_product.get('รูปภาพURL'))
+                
+                await interaction.followup.send(embed=embed,)
+            else:
+                embed = discord.Embed(
+                    title="❌ แก้ไขข้อมูลไม่สำเร็จ",
+                    description="เกิดข้อผิดพลาดในการแก้ไขข้อมูล",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed)
+        
+        except ValueError:
+            embed = discord.Embed(
+                title="❌ ข้อมูลไม่ถูกต้อง",
+                description="กรุณาใส่จำนวนและราคาเป็นตัวเลข",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed)
+        
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"เกิดข้อผิดพลาด: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed)
+
+class DeleteConfirmationView(discord.ui.View):
+    """View สำหรับยืนยันการลบสินค้า"""
+    def __init__(self, stock_manager, product_name):
+        super().__init__(timeout=60)
+        self.stock_manager = stock_manager
+        self.product_name = product_name
+    
+    @discord.ui.button(label='ยืนยันลบ', style=discord.ButtonStyle.danger, emoji='🗑️')
+    async def confirm_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        
+        try:
+            success = self.stock_manager.delete_product(self.product_name, interaction.user)
+            
+            if success:
+                embed = discord.Embed(
+                    title="✅ ลบสินค้าสำเร็จ",
+                    description=f"ลบสินค้า **{self.product_name}** เรียบร้อยแล้ว",
+                    color=0x2ecc71
+                )
+                embed.set_footer(text=f"ดำเนินการโดย {interaction.user}")
+                await interaction.followup.send(embed=embed, view=AdvancedStockView(self.stock_manager))
+            else:
+                embed = discord.Embed(
+                    title="❌ ลบสินค้าไม่สำเร็จ",
+                    description="เกิดข้อผิดพลาดในการลบสินค้า",
+                    color=0xe74c3c
+                )
+                await interaction.followup.send(embed=embed)
+        
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ เกิดข้อผิดพลาด",
+                description=f"เกิดข้อผิดพลาด: {str(e)}",
+                color=0xe74c3c
+            )
+            await interaction.followup.send(embed=embed)
+    
+    @discord.ui.button(label='ยกเลิก', style=discord.ButtonStyle.secondary, emoji='❌')
+    async def cancel_delete(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = discord.Embed(
+            title="❌ ยกเลิกการลบ",
+            description="ยกเลิกการลบสินค้าแล้ว",
+            color=0x95a5a6
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        self.stop()
+
 # ฟังก์ชันช่วยสำหรับการลบห้องหลังแสดงใบเสร็จการขาย
 async def remove_seller_permission(interaction, seller_user):
     """ลบห้องหลังแสดงใบเสร็จการขาย"""
@@ -190,25 +420,56 @@ class ProductSelectView(discord.ui.View):
                     color=0xe74c3c if quantity < 5 else 0x2ecc71
                 )
                 
-                embed.add_field(name="จำนวน", value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}", inline=True)
+                # ข้อมูลพื้นฐาน
+                embed.add_field(name="📦 จำนวน", value=f"{quantity} {product.get('หน่วย', 'ชิ้น')}", inline=True)
                 if price > 0:
-                    embed.add_field(name="ราคา", value=f"{price:,.0f}", inline=True)
-                embed.add_field(name="อัปเดตล่าสุด", value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'), inline=True)
+                    embed.add_field(name="💰 ราคา", value=f"{price:,.0f} บาท", inline=True)
+                embed.add_field(name="🆔 ID", value=f"#{product.get('ID', 'N/A')}", inline=True)
                 
+                # วันที่อัปเดต
+                embed.add_field(name="🕒 อัปเดตล่าสุด", value=product.get('วันที่อัปเดตล่าสุด', 'ไม่ระบุ'), inline=True)
+                
+                # ผู้อัปเดต
+                if product.get('ผู้อัปเดต'):
+                    embed.add_field(name="👤 ผู้อัปเดต", value=product.get('ผู้อัปเดต'), inline=True)
+                
+                # เพิ่มช่องว่างให้เรียบร้อย
+                embed.add_field(name="\u200b", value="\u200b", inline=True)
+                
+                # คำอธิบาย
                 if product.get('คำอธิบาย'):
-                    embed.add_field(name="คำอธิบาย", value=product.get('คำอธิบาย'), inline=False)
+                    embed.add_field(name="📝 คำอธิบาย", value=product.get('คำอธิบาย'), inline=False)
                 
+                # รูปภาพ
                 if product.get('รูปภาพURL'):
                     embed.set_image(url=product.get('รูปภาพURL'))
                 
+                # แจ้งเตือนสต็อกต่ำ
                 if quantity < 5:
                     embed.add_field(
                         name="⚠️ แจ้งเตือน",
-                        value="สินค้าใกล้หมดแล้ว",
+                        value="สินค้าใกล้หมดแล้ว กรุณาเติมสินค้า",
                         inline=False
                     )
                 
-                await interaction.response.send_message(embed=embed, view=AdvancedStockView(self.stock_manager))
+                # สถานะสินค้า
+                if quantity == 0:
+                    embed.add_field(
+                        name="🚫 สถานะ",
+                        value="สินค้าหมด",
+                        inline=False
+                    )
+                    embed.color = 0x95a5a6
+                
+                # คำแนะนำ
+                embed.add_field(
+                    name="💡 การจัดการ",
+                    value="ใช้ปุ่มด้านล่างเพื่อแก้ไขข้อมูลสินค้า เพิ่มรูปภาพ หรือลบสินค้า",
+                    inline=False
+                )
+                
+                # ใช้ ProductInspectionView แทน
+                await interaction.response.send_message(embed=embed, view=ProductInspectionView(self.stock_manager, product))
             else:
                 embed = discord.Embed(
                     title="❌ ไม่พบสินค้า",
@@ -688,7 +949,7 @@ class ImageUploadView(discord.ui.View):
             )
             embed.add_field(
                 name="💡 คำแนะนำ",
-                value="กรุณาส่งรูปภาพในช่องนี้ก่อน หรือใช้ปุ่ม 'คำแนะนำการอัปโหลด'",
+                value="กรุณาส่งรูปภาพในช่องนี้ก่อน หรือใช้คำแนะนำการอัปโหลด",
                 inline=False
             )
             await interaction.followup.send(embed=embed)

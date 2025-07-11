@@ -527,6 +527,81 @@ class StockManager:
         except Exception as e:
             print(f"❌ เกิดข้อผิดพลาดในการดึงรายละเอียดใบเสร็จ: {e}")
             return []
+    
+    def update_product(self, original_name, new_name, new_quantity, new_unit, new_price, new_description, user):
+        """อัปเดตข้อมูลสินค้า"""
+        try:
+            stock_sheet = self.spreadsheet.worksheet('Stock')
+            existing_products = stock_sheet.get_all_records()
+            
+            # ค้นหาสินค้าที่ต้องการอัปเดต
+            for i, product in enumerate(existing_products):
+                if product['ชื่อสินค้า'].lower() == original_name.lower():
+                    row_num = i + 2  # +2 เพราะ index เริ่มจาก 0 และมีหัวตาราง
+                    
+                    # อัปเดตข้อมูล
+                    current_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    # อัปเดตทีละคอลัมน์
+                    stock_sheet.update(f'B{row_num}', new_name)  # ชื่อสินค้า
+                    stock_sheet.update(f'C{row_num}', new_quantity)  # จำนวน
+                    stock_sheet.update(f'D{row_num}', new_unit)  # หน่วย
+                    stock_sheet.update(f'E{row_num}', new_price)  # ราคา
+                    stock_sheet.update(f'F{row_num}', new_description)  # คำอธิบาย
+                    stock_sheet.update(f'H{row_num}', current_date)  # วันที่อัปเดต
+                    
+                    # เพิ่มประวัติการอัปเดต
+                    self.add_history(
+                        user, 
+                        'แก้ไขข้อมูล', 
+                        new_name, 
+                        new_quantity, 
+                        f'อัปเดตจาก: {original_name} -> {new_name}'
+                    )
+                    
+                    print(f"✅ อัปเดตสินค้า {original_name} -> {new_name} สำเร็จ")
+                    return True
+            
+            print(f"❌ ไม่พบสินค้า {original_name}")
+            return False
+            
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการอัปเดตสินค้า: {e}")
+            return False
+    
+    def delete_product(self, product_name, user):
+        """ลบสินค้า"""
+        try:
+            stock_sheet = self.spreadsheet.worksheet('Stock')
+            existing_products = stock_sheet.get_all_records()
+            
+            # ค้นหาสินค้าที่ต้องการลบ
+            for i, product in enumerate(existing_products):
+                if product['ชื่อสินค้า'].lower() == product_name.lower():
+                    row_num = i + 2  # +2 เพราะ index เริ่มจาก 0 และมีหัวตาราง
+                    
+                    # ลบแถว
+                    stock_sheet.delete_rows(row_num)
+                    
+                    # เพิ่มประวัติการลบ
+                    self.add_history(
+                        user, 
+                        'ลบสินค้า', 
+                        product_name, 
+                        product.get('จำนวน', 0), 
+                        'ลบสินค้าออกจากระบบ'
+                    )
+                    
+                    print(f"✅ ลบสินค้า {product_name} สำเร็จ")
+                    return True
+            
+            print(f"❌ ไม่พบสินค้า {product_name}")
+            return False
+            
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการลบสินค้า: {e}")
+            return False
+    
 
 class Cart:
     def __init__(self):
